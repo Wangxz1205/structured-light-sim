@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高精度条纹结构光三维成像与点云重建仿真实验室</title>
+    <!-- 引入 Tailwind CSS 用于快速构建精美的 UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Lucide 图标库 -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- 引入 Three.js 用于 3D 渲染 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- 引入 Three.js 轨道控制器 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- 引入 Markdown 渲染支持，方便展示 AI 输出的 LaTeX 公式和排版 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        /* 隐藏滚动条但保留功能 */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        /* Markdown 样式微调 */
+        .markdown-body h3 { font-size: 1.1em; font-weight: bold; margin-top: 1em; margin-bottom: 0.5em; color: #818cf8; }
+        .markdown-body p { font-size: 0.85rem; margin-bottom: 0.6em; line-height: 1.5; color: #cbd5e1; }
+        .markdown-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.6em; font-size: 0.85rem; color: #cbd5e1; }
+        .markdown-body code { background: #0f172a; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-family: monospace; color: #f43f5e; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans overflow-hidden">
+
+    <!-- 顶部导航栏 -->
+    <header class="bg-slate-900 border-b border-slate-800 px-6 py-3 flex justify-between items-center z-10">
+        <div class="flex items-center space-x-3">
+            <div class="bg-indigo-600 p-2 rounded-lg text-white">
+                <i data-lucide="sparkles" class="w-6 h-6 text-yellow-300"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-400 to-cyan-400 bg-clip-text text-transparent flex items-center gap-2">
+                    结构光物理仿真与三维点云重建实验室
+                </h1>
+                <p class="text-xs text-slate-400">第二阶段：正弦条纹投影 + 三维人脸面具 + 4步相移重构算法 + ✨ Gemini 2.5 导师</p>
+            </div>
+        </div>
+        <div class="flex items-center space-x-4">
+            <span class="flex items-center bg-indigo-500/10 text-indigo-300 text-xs px-3 py-1.5 rounded-full border border-indigo-500/20">
+                <span class="w-2 h-2 rounded-full bg-indigo-500 mr-2 animate-ping"></span>
+                ✨ 4-Step Phase Shifting Active
+            </span>
+        </div>
+    </header>
+
+    <!-- 主体内容区 -->
+    <main class="flex-1 flex overflow-hidden">
+        
+        <!-- 左侧功能面板 (物理调参 / AI 导师双标签页切换) -->
+        <section class="w-[420px] bg-slate-900 border-r border-slate-800 flex flex-col overflow-hidden">
+            
+            <!-- 导航 Tabs -->
+            <div class="flex border-b border-slate-800 bg-slate-950/80 p-2">
+                <button id="tabPhysics" class="flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 bg-slate-800 text-slate-100 flex items-center justify-center gap-1.5">
+                    <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+                    物理与算法控制
+                </button>
+                <button id="tabAI" class="flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 text-slate-400 hover:text-slate-100 flex items-center justify-center gap-1.5">
+                    <i data-lucide="graduation-cap" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    ✨ AI 学术导师
+                </button>
+            </div>
+
+            <!-- Tab 1: 物理控制面板 -->
+            <div id="physicsPanel" class="flex-1 flex flex-col overflow-y-auto no-scrollbar">
+                <!-- 原理简述 -->
+                <div class="p-4 border-b border-slate-800 bg-slate-900/40">
+                    <h2 class="text-xs font-semibold uppercase tracking-wider text-indigo-400 flex items-center">
+                        <i data-lucide="info" class="w-4 h-4 mr-2"></i>
+                        正弦光栅投影与解相原理
+                    </h2>
+                    <p class="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
+                        投影仪投射正弦条纹，由于物体表面高度起伏，条纹发生弯曲调制。通过投射4张具有 $\pi/2$ 相位差的图，解调出每个像素的<b>绝对相位值</b>以还原3D高度。
+                    </p>
+                </div>
+
+                <!-- 调节滑块组 -->
+                <div class="p-4 space-y-5">
+                    <!-- 1. 被测物体选择 -->
+                    <div class="space-y-2">
+                        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center">
+                            <i data-lucide="shapes" class="w-4 h-4 mr-1.5 text-amber-500"></i>
+                            1. 3D 被测物体选择
+                        </h3>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button id="btnObjSphere" class="py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition">
+                                球体 (Sphere)
+                            </button>
+                            <button id="btnObjFace" class="py-1.5 px-2 bg-indigo-600 border border-indigo-500 rounded text-xs font-semibold text-white hover:bg-indigo-500 transition">
+                                3D面具 (Face)
+                            </button>
+                            <button id="btnObjPeaks" class="py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition">
+                                多峰面 (Peaks)
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 2. 投影仪参数 -->
+                    <div class="space-y-3">
+                        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center border-b border-slate-800/60 pb-1.5">
+                            <i data-lucide="video" class="w-4 h-4 mr-2 text-indigo-400"></i>
+                            2. 投影仪参数 (Projector)
+                        </h3>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">X轴基线偏置</span>
+                                <span class="font-mono text-indigo-400" id="projXVal">-2.0 m</span>
+                            </div>
+                            <input type="range" id="projX" min="-5.0" max="-0.5" step="0.1" value="-2.0" 
+                                   class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">条纹空间频率 (Frequency)</span>
+                                <span class="font-mono text-indigo-400" id="fringeFreqVal">8.0 rad/m</span>
+                            </div>
+                            <input type="range" id="fringeFreq" min="2.0" max="25.0" step="0.5" value="8.0" 
+                                   class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">实时相移偏置 (Phase Shift)</span>
+                                <span class="font-mono text-indigo-400" id="phaseShiftVal">0.0°</span>
+                            </div>
+                            <input type="range" id="phaseShift" min="0" max="360" step="10" value="0" 
+                                   class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                        </div>
+                    </div>
+
+                    <!-- 3. 相机参数 -->
+                    <div class="space-y-3">
+                        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center border-b border-slate-800/60 pb-1.5">
+                            <i data-lucide="camera" class="w-4 h-4 mr-2 text-rose-500"></i>
+                            3. 相机及深度设置 (Camera)
+                        </h3>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">相机 X 轴偏置</span>
+                                <span class="font-mono text-rose-400" id="camXVal">2.0 m</span>
+                            </div>
+                            <input type="range" id="camX" min="0.5" max="5.0" step="0.1" value="2.0" 
+                                   class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">物体中心距离 (Z 轴)</span>
+                                <span class="font-mono text-amber-500" id="boardZVal">5.0 m</span>
+                            </div>
+                            <input type="range" id="boardZ" min="3.0" max="8.0" step="0.1" value="5.0" 
+                                   class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500">
+                        </div>
+                    </div>
+
+                    <!-- 4. 重建系统核心触发 -->
+                    <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2">
+                        <h4 class="text-xs font-bold text-slate-200 flex items-center">
+                            <i data-lucide="play" class="w-3.5 h-3.5 mr-1 text-emerald-400"></i>
+                            4步相移条纹采集与重建
+                        </h4>
+                        <p class="text-[10px] text-slate-400 leading-normal">
+                            点击后，系统会全自动连续投射 $0^\circ, 90^\circ, 180^\circ, 270^\circ$ 的正弦条纹，在后台解调出绝对相位并反演 3D 点云。
+                        </p>
+                        <button id="btnRunReconstruction" class="w-full py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs rounded shadow transition flex items-center justify-center gap-1.5">
+                            <i data-lucide="refresh-cw" class="w-4 h-4 animate-spin-slow"></i>
+                            启动高精度点云重构
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 底部复位 -->
+                <div class="p-4 border-t border-slate-800 mt-auto bg-slate-950/20">
+                    <button id="resetBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded text-xs font-semibold flex items-center justify-center transition">
+                        <i data-lucide="rotate-ccw" class="w-4 h-4 mr-1.5"></i>
+                        复位仿真实验室
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tab 2: AI 智能学术导师面板 -->
+            <div id="aiPanel" class="flex-1 flex flex-col overflow-y-auto no-scrollbar hidden">
+                <!-- 预设场景 -->
+                <div class="p-4 border-b border-slate-800 bg-slate-905/30">
+                    <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center mb-2.5">
+                        <i data-lucide="workflow" class="w-4 h-4 mr-1.5 text-indigo-400"></i>
+                        一键预设物理应用场景
+                    </h3>
+                    <div class="grid grid-cols-1 gap-2">
+                        <button class="ai-preset-btn text-left p-2.5 rounded-md bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 hover:border-indigo-500/50 transition text-xs" data-prompt="微小人脸面部扫描：目标物体为精密面部，需要极高的重建细节。条纹频率需要显著提升以获取高相位灵敏度，基线中等。">
+                            👤 <strong>高精面部扫描重建</strong> (高频条纹)
+                        </button>
+                        <button class="ai-preset-btn text-left p-2.5 rounded-md bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 hover:border-indigo-500/50 transition text-xs" data-prompt="宽阔多峰地形测绘：物体起伏剧烈，极容易产生严重相位解混叠（Phase Aliasing）风险。需要降低条纹空间频率，搭配较短的基线以平滑过渡。">
+                            ⛰️ <strong>剧烈起伏多峰重建</strong> (低频防解相混叠)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 自定义学术任务输入区 -->
+                <div class="p-4 border-b border-slate-800 flex flex-col gap-3">
+                    <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center">
+                        <i data-lucide="message-square" class="w-4 h-4 mr-1.5 text-indigo-400"></i>
+                        自定义实验要求
+                    </h3>
+                    <textarea id="aiCustomInput" placeholder="输入你想完成的结构光条纹重建实验要求。例如：'我想模拟人脸高精度扫描，怎样设置频率和基线能获得最佳精度？' " 
+                              class="w-full h-24 bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-300 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+                    
+                    <button id="aiConfigureBtn" class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg transition">
+                        <i data-lucide="sparkles" class="w-4 h-4 text-yellow-300"></i>
+                        ✨ 一键配置光学硬件系统
+                    </button>
+                </div>
+
+                <!-- 当前系统诊断触发 -->
+                <div class="p-4 bg-slate-950/20">
+                    <button id="aiDiagnoseBtn" class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-indigo-500 text-slate-200 py-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition">
+                        <i data-lucide="activity" class="w-4 h-4 text-emerald-400"></i>
+                        ✨ 诊断条纹自适应解相能力
+                    </button>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- 右侧视口区 -->
+        <section class="flex-1 flex flex-col relative overflow-hidden">
+            
+            <!-- 上部分：主 3D 实验室场景 (正弦条纹投影展示) -->
+            <div class="flex-1 relative" id="canvasContainer">
+                <div class="absolute top-4 left-4 bg-slate-900/95 border border-slate-800 p-3 rounded-lg z-10 shadow-lg pointer-events-none">
+                    <h4 class="text-xs font-bold text-slate-200 flex items-center">
+                        <span class="w-2 h-2 rounded-full bg-indigo-500 mr-2 animate-pulse"></span>
+                        三维物理投影场景 (Physical Projector View)
+                    </h4>
+                    <p class="text-[10px] text-slate-400 mt-1">正弦条纹顺着三维物体弯曲。拖拽鼠标旋转，滚轮缩放。</p>
+                </div>
+
+                <!-- AI 生成中 Loading 遮罩层 -->
+                <div id="aiLoadingOverlay" class="absolute inset-0 bg-slate-950/80 z-20 backdrop-blur-sm hidden flex-col items-center justify-center gap-4">
+                    <div class="flex space-x-2">
+                        <div class="w-3 h-3 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+                        <div class="w-3 h-3 bg-purple-500 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                        <div class="w-3 h-3 bg-cyan-500 rounded-full animate-bounce" style="animation-delay: 0.3s"></div>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-sm font-bold text-slate-200" id="loadingText">✨ AI 导师正在解算硬件参数与多频外差理论解相公式...</p>
+                    </div>
+                </div>
+
+                <canvas id="threeCanvas" class="w-full h-full block"></canvas>
+            </div>
+
+            <!-- 下部分：双画布画中画 (相机感光拍摄 vs 三维重建密集点云) -->
+            <div class="h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-3 gap-3 p-3 relative z-10">
+                
+                <!-- 1. 左侧：相机拍摄视口 (Camera Fringe Pattern) -->
+                <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative">
+                    <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
+                        <span class="text-xs font-semibold text-rose-400 flex items-center">
+                            <i data-lucide="camera" class="w-3.5 h-3.5 mr-1"></i>
+                            相机传感器拍摄视图
+                        </span>
+                        <span class="text-[10px] bg-rose-500/15 text-rose-400 px-1.5 rounded font-mono">Camera CCD</span>
+                    </div>
+                    <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
+                        <canvas id="cameraSensorCanvas" class="w-full h-full block bg-black"></canvas>
+                    </div>
+                </div>
+
+                <!-- 2. 中间：相移解算过程展示 (Wrapped / Unwrapped Phase) -->
+                <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative">
+                    <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
+                        <span class="text-xs font-semibold text-cyan-400 flex items-center">
+                            <i data-lucide="binary" class="w-3.5 h-3.5 mr-1"></i>
+                            解相图像状态 (2D Phase)
+                        </span>
+                        <div class="flex space-x-2">
+                            <button id="btnShowWrapped" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition">包裹相位</button>
+                            <button id="btnShowUnwrapped" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition">绝对相位</button>
+                        </div>
+                    </div>
+                    <div class="flex-1 bg-black flex items-center justify-center p-2">
+                        <!-- 解相分析画布 -->
+                        <div class="w-full h-full relative">
+                            <canvas id="phaseAnalysisCanvas" class="w-full h-full block bg-black rounded"></canvas>
+                            <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono" id="lblPhaseState">
+                                包裹相位范围: [-π, π]
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. 右侧：3D 重建密集点云视口 (Reconstructed Point Cloud) -->
+                <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative">
+                    <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
+                        <span class="text-xs font-semibold text-emerald-400 flex items-center">
+                            <i data-lucide="boxes" class="w-3.5 h-3.5 mr-1"></i>
+                            重组 3D 点云视口
+                        </span>
+                        <span class="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 rounded font-mono" id="lblPointCount">Points: 0</span>
+                    </div>
+                    <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden" id="pointCloudContainer">
+                        <canvas id="reconstructedCloudCanvas" class="w-full h-full block bg-black"></canvas>
+                        <!-- 点云操作小浮窗 -->
+                        <div class="absolute bottom-2 left-2 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-[9px] text-slate-400 pointer-events-none">
+                            💡 可点击在此视口中自由拖动旋转重建的 3D 人脸/球面
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- 学术诊断/AI 提示报告悬浮侧拉式抽屉 -->
+            <div id="aiReportDrawer" class="absolute right-3 top-3 bottom-76 w-80 bg-slate-900/95 border border-slate-800 rounded-xl overflow-hidden shadow-2xl z-20 flex flex-col transform translate-x-[350px] opacity-0 pointer-events-none transition duration-300">
+                <div class="bg-indigo-950 px-4 py-3 border-b border-indigo-800 flex justify-between items-center">
+                    <span class="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                        <i data-lucide="award" class="w-4 h-4 text-yellow-400"></i>
+                        ✨ AI 导师学术分析报告
+                    </span>
+                    <button id="btnCloseDrawer" class="text-slate-400 hover:text-slate-200">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                <div class="flex-1 p-4 overflow-y-auto no-scrollbar font-sans text-xs text-slate-300 leading-relaxed select-text">
+                    <div id="aiReportContent" class="markdown-body"></div>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- JavaScript 物理、条纹投影、4步相移与 AI 交互逻辑 -->
+    <script>
+        // 初始化 Lucide 图标
+        lucide.createIcons();
+
+        // ------------------ 0. Gemini API 核心配置 ------------------
+        const apiKey = ""; // 运行时提供该 Key
+
+        async function fetchGeminiWithRetry(url, options, maxRetries = 5) {
+            let delay = 1000;
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.ok) return await response.json();
+                    if (response.status === 429 || response.status >= 500) {
+                        await new Promise(res => setTimeout(res, delay));
+                        delay *= 2;
+                        continue;
+                    }
+                    throw new Error(`HTTP Error: ${response.status}`);
+                } catch (error) {
+                    if (i === maxRetries - 1) throw error;
+                    await new Promise(res => setTimeout(res, delay));
+                    delay *= 2;
+                }
+            }
+        }
+
+        function showAILoading(msg) {
+            document.getElementById('loadingText').innerText = msg;
+            document.getElementById('aiLoadingOverlay').classList.remove('hidden');
+        }
+        function hideAILoading() {
+            document.getElementById('aiLoadingOverlay').classList.add('hidden');
+        }
+
+        // 显示通知
+        function showNotification(title, text, type = 'error') {
+            const container = document.createElement('div');
+            container.className = `fixed top-16 left-1/2 transform -translate-x-1/2 z-50 px-4 py-3 rounded-lg border shadow-xl flex items-center space-x-3 transition duration-300 max-w-md ${
+                type === 'error' ? 'bg-red-950 border-red-500/50 text-red-200' : 'bg-emerald-950 border-emerald-500/50 text-emerald-200'
+            }`;
+            const icon = type === 'error' ? 'alert-triangle' : 'check-circle';
+            container.innerHTML = `
+                <i data-lucide="${icon}" class="w-5 h-5 flex-shrink-0"></i>
+                <div>
+                    <h5 class="text-xs font-bold">${title}</h5>
+                    <p class="text-[10px] mt-0.5 opacity-80">${text}</p>
+                </div>
+            `;
+            document.body.appendChild(container);
+            lucide.createIcons();
+            setTimeout(() => {
+                container.classList.add('opacity-0');
+                setTimeout(() => container.remove(), 300);
+            }, 4000);
+        }
+
+        // ------------------ 1. 三维空间参数与仿真状态 ------------------
+        const state = {
+            activeObjectType: 'face', // 'sphere' | 'face' | 'peaks'
+            proj: {
+                x: -2.0,
+                y: 0,
+                z: 0,
+                yaw: 15, // 倾斜角度
+                angle: 45 // DLP投影半视场角
+            },
+            fringe: {
+                frequency: 8.0, // 条纹空间频率
+                phase: 0.0 // 当前投射瞬时相移角度 (弧度)
+            },
+            cam: {
+                x: 2.0,
+                y: 0,
+                z: 0,
+                fov: 35
+            },
+            board: {
+                z: 5.0
+            },
+            phaseStateView: 'wrapped' // 'wrapped' | 'unwrapped'
+        };
+
+        // ------------------ 2. 仿真物理三维场景配置 ------------------
+        const container = document.getElementById('canvasContainer');
+        const mainScene = new THREE.Scene();
+        mainScene.background = new THREE.Color(0x060a13);
+
+        const mainCamera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 50);
+        mainCamera.position.set(0, 5, 8);
+
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('threeCanvas'), antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+
+        const controls = new THREE.OrbitControls(mainCamera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI / 2 - 0.05;
+
+        // 环境光，保证3D物件本身的漫反射基本可见性
+        const ambientLight = new THREE.AmbientLight(0x0a1020);
+        mainScene.add(ambientLight);
+
+        // 3D 实验室坐标格地基
+        const gridHelper = new THREE.GridHelper(20, 40, 0x1e293b, 0x0f172a);
+        gridHelper.position.y = -2;
+        mainScene.add(gridHelper);
+
+        // 物理硬件设备模型 (投影仪，摄像机)
+        function createHardwareModel(color) {
+            const group = new THREE.Group();
+            const bodyGeo = new THREE.BoxGeometry(0.5, 0.3, 0.6);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.6 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            group.add(body);
+            
+            const lensGeo = new THREE.CylinderGeometry(0.12, 0.15, 0.25, 16);
+            lensGeo.rotateX(Math.PI / 2);
+            const lensMat = new THREE.MeshStandardMaterial({ color: color, metalness: 0.9, roughness: 0.1 });
+            const lens = new THREE.Mesh(lensGeo, lensMat);
+            lens.position.set(0, 0, 0.35);
+            group.add(lens);
+            return group;
+        }
+
+        const projModel = createHardwareModel(0x3b82f6); // 投影仪
+        const camModel = createHardwareModel(0xf43f5e);  // 摄像机
+        mainScene.add(projModel);
+        mainScene.add(camModel);
+
+        // ------------------ 3. 程序化生成立体三维被测物 ------------------
+        let targetMesh = null;
+
+        // 生成程序化的、具有高解析度的 3D 模型
+        function buildProceduralGeometry(type) {
+            const geom = new THREE.PlaneGeometry(3.5, 3.5, 200, 200);
+            const pos = geom.attributes.position;
+            
+            for (let i = 0; i < pos.count; i++) {
+                const x = pos.getX(i);
+                const y = pos.getY(i);
+                let z = 0;
+                
+                if (type === 'sphere') {
+                    const r = 1.2;
+                    const distSq = x * x + y * y;
+                    if (distSq < r * r) {
+                        z = Math.sqrt(r * r - distSq);
+                    }
+                } else if (type === 'face') {
+                    // 构造出眼窝、鼻梁、脸颊、下巴的立体人脸
+                    const baseDome = 0.4 * Math.exp(-(x*x + y*y)/2.0); 
+                    const nose = 0.8 * Math.exp(-((x*x)/0.06 + ((y - 0.25)*(y - 0.25))/0.22)); 
+                    const leftCheek = 0.32 * Math.exp(-(((x + 0.5)*(x + 0.5))/0.14 + ((y + 0.1)*(y + 0.1))/0.18)); 
+                    const rightCheek = 0.32 * Math.exp(-(((x - 0.5)*(x - 0.5))/0.14 + ((y + 0.1)*(y + 0.1))/0.18)); 
+                    const chin = 0.25 * Math.exp(-((x*x)/0.12 + ((y + 0.85)*(y + 0.85))/0.12)); 
+                    const forehead = 0.15 * Math.exp(-((x*x)/0.6 + ((y - 0.8)*(y - 0.8))/0.3)); 
+                    const leftEyeSocket = -0.12 * Math.exp(-(((x + 0.38)*(x + 0.38))/0.08 + ((y - 0.45)*(y - 0.45))/0.08)); 
+                    const rightEyeSocket = -0.12 * Math.exp(-(((x - 0.38)*(x - 0.38))/0.08 + ((y - 0.45)*(y - 0.45))/0.08));
+                    
+                    z = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEyeSocket + rightEyeSocket;
+                } else if (type === 'peaks') {
+                    z = 0.35 * Math.sin(x * 3.2) * Math.cos(y * 3.2) + 0.18 * Math.cos(x * 6.5) + 0.15 * Math.sin(y * 5.0);
+                }
+                pos.setZ(i, z);
+            }
+            
+            geom.computeVertexNormals();
+            return geom;
+        }
+
+        // ------------------ 4. 自定义 GLSL Projective Texture 着色器 ------------------
+        let targetShaderMaterial = null;
+
+        function initShaderMaterial() {
+            const uniforms = {
+                projectorMatrix: { value: new THREE.Matrix4() },
+                fringeFrequency: { value: state.fringe.frequency },
+                phaseShift: { value: state.fringe.phase },
+                projCenterZ: { value: state.board.z },
+                activeColor: { value: new THREE.Color(0xd1d5db) }
+            };
+
+            targetShaderMaterial = new THREE.ShaderMaterial({
+                uniforms: uniforms,
+                vertexShader: `
+                    varying vec4 vProjectorUV;
+                    varying vec3 vWorldPosition;
+                    varying vec3 vNormal;
+                    uniform mat4 projectorMatrix;
+                    void main() {
+                        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+                        vNormal = normalize(normalMatrix * normal);
+                        vProjectorUV = projectorMatrix * modelMatrix * vec4(position, 1.0);
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    varying vec4 vProjectorUV;
+                    varying vec3 vWorldPosition;
+                    varying vec3 vNormal;
+                    uniform float fringeFrequency;
+                    uniform float phaseShift;
+                    uniform float projCenterZ;
+                    uniform vec3 activeColor;
+                    void main() {
+                        vec3 projCoords = vProjectorUV.xyz / vProjectorUV.w;
+                        vec2 uvProj = projCoords.xy * 0.5 + 0.5;
+                        
+                        vec3 lightDir = normalize(vec3(-2.0, 3.0, 2.0));
+                        float diff = max(dot(vNormal, lightDir), 0.15);
+                        
+                        if (uvProj.x >= 0.0 && uvProj.x <= 1.0 && uvProj.y >= 0.0 && uvProj.y <= 1.0 && vProjectorUV.w > 0.0) {
+                            float projX = projCoords.x * 6.2831853; 
+                            float intensity = 0.5 + 0.5 * cos(projX * fringeFrequency + phaseShift);
+                            vec3 stripeColor = vec3(intensity);
+                            gl_FragColor = vec4(stripeColor * diff, 1.0);
+                        } else {
+                            gl_FragColor = vec4(activeColor * 0.1 * diff, 1.0);
+                        }
+                    }
+                `,
+                side: THREE.DoubleSide
+            });
+        }
+
+        function updateTargetObject() {
+            if (targetMesh) {
+                mainScene.remove(targetMesh);
+            }
+            const geom = buildProceduralGeometry(state.activeObjectType);
+            
+            if (!targetShaderMaterial) {
+                initShaderMaterial();
+            }
+            
+            targetMesh = new THREE.Mesh(geom, targetShaderMaterial);
+            targetMesh.position.set(0, 0, state.board.z);
+            targetMesh.rotation.set(0, Math.PI, 0); 
+            mainScene.add(targetMesh);
+        }
+
+        // ------------------ 5. 光路系统计算与矩阵更新 ------------------
+        const projectorCamera = new THREE.PerspectiveCamera(state.proj.angle, 1, 0.1, 20);
+
+        function updateProjectorMatrix() {
+            projectorCamera.position.set(state.proj.x, state.proj.y, state.proj.z);
+            projectorCamera.fov = state.proj.angle;
+            projectorCamera.lookAt(0, 0, state.board.z);
+            projectorCamera.updateMatrixWorld();
+            projectorCamera.matrixWorldInverse.copy(projectorCamera.matrixWorld).invert();
+            projectorCamera.updateProjectionMatrix();
+
+            const projVP = new THREE.Matrix4();
+            projVP.multiplyMatrices(projectorCamera.projectionMatrix, projectorCamera.matrixWorldInverse);
+
+            if (targetShaderMaterial) {
+                targetShaderMaterial.uniforms.projectorMatrix.value.copy(projVP);
+                targetShaderMaterial.uniforms.fringeFrequency.value = state.fringe.frequency;
+                targetShaderMaterial.uniforms.phaseShift.value = state.fringe.phase;
+                targetShaderMaterial.uniforms.projCenterZ.value = state.board.z;
+            }
+
+            projModel.position.set(state.proj.x, state.proj.y, state.proj.z);
+            projModel.lookAt(0, 0, state.board.z);
+
+            camModel.position.set(state.cam.x, state.cam.y, state.cam.z);
+            camModel.lookAt(0, 0, state.board.z);
+        }
+
+        // ------------------ 6. 右下角：相机拍摄 CCD 图案模拟 (Canvas) ------------------
+        const sensorCanvas = document.getElementById('cameraSensorCanvas');
+        const sCtx = sensorCanvas.getContext('2d');
+        sensorCanvas.width = 256;
+        sensorCanvas.height = 256;
+
+        function drawCameraCCDView(currentPhase) {
+            const w = sensorCanvas.width;
+            const h = sensorCanvas.height;
+            sCtx.fillStyle = '#05070f';
+            sCtx.fillRect(0, 0, w, h);
+
+            const imgData = sCtx.createImageData(w, h);
+            const data = imgData.data;
+
+            const baseline = state.cam.x - state.proj.x;
+            const distZ = state.board.z;
+
+            for (let v = 0; v < h; v++) {
+                const ny = (v / h) * 2 - 1; 
+                for (let u = 0; u < w; u++) {
+                    const nx = (u / w) * 2 - 1;
+                    const x_board = nx * 1.6;
+                    const y_board = -ny * 1.6;
+
+                    let z_height = 0;
+                    if (state.activeObjectType === 'sphere') {
+                        const r = 1.2;
+                        const dSq = x_board*x_board + y_board*y_board;
+                        if (dSq < r*r) z_height = Math.sqrt(r*r - dSq);
+                    } else if (state.activeObjectType === 'face') {
+                        const baseDome = 0.4 * Math.exp(-(x_board*x_board + y_board*y_board)/2.0);
+                        const nose = 0.8 * Math.exp(-((x_board*x_board)/0.06 + ((y_board - 0.25)*(y_board - 0.25))/0.22));
+                        const leftCheek = 0.32 * Math.exp(-(((x_board + 0.5)*(x_board + 0.5))/0.14 + ((y_board + 0.1)*(y_board + 0.1))/0.18));
+                        const rightCheek = 0.32 * Math.exp(-(((x_board - 0.5)*(x_board - 0.5))/0.14 + ((y_board + 0.1)*(y_board + 0.1))/0.18));
+                        const chin = 0.25 * Math.exp(-((x_board*x_board)/0.12 + ((y_board + 0.85)*(y_board + 0.85))/0.12));
+                        const forehead = 0.15 * Math.exp(-((x_board*x_board)/0.6 + ((y_board - 0.8)*(y_board - 0.8))/0.3));
+                        const leftEye = -0.12 * Math.exp(-(((x_board + 0.38)*(x_board + 0.38))/0.08 + ((y_board - 0.45)*(y_board - 0.45))/0.08));
+                        const rightEye = -0.12 * Math.exp(-(((x_board - 0.38)*(x_board - 0.38))/0.08 + ((y_board - 0.45)*(y_board - 0.45))/0.08));
+                        z_height = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEye + rightEye;
+                    } else if (state.activeObjectType === 'peaks') {
+                        z_height = 0.35 * Math.sin(x_board * 3.2) * Math.cos(y_board * 3.2) + 0.18 * Math.cos(x_board * 6.5) + 0.15 * Math.sin(y_board * 5.0);
+                    }
+
+                    const projShiftX = x_board - (z_height * (baseline / distZ)) * 0.75;
+                    const fringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + currentPhase);
+                    let intensity = 0.5 + 0.5 * fringeVal;
+
+                    const boundaryLimit = 1.35;
+                    if (x_board*x_board + y_board*y_board > boundaryLimit * boundaryLimit && state.activeObjectType !== 'peaks') {
+                        intensity = 0.05;
+                    }
+
+                    const idx = (v * w + u) * 4;
+                    const cVal = Math.floor(intensity * 230 + 15);
+                    data[idx] = cVal;     
+                    data[idx+1] = cVal;   
+                    data[idx+2] = Math.floor(cVal * 1.15); 
+                    data[idx+3] = 255;   
+                }
+            }
+            sCtx.putImageData(imgData, 0, 0);
+        }
+
+        // ------------------ 7. 相移计算与绝对相位提取 (Wrapped & Unwrapped Canvas) ------------------
+        const phaseCanvas = document.getElementById('phaseAnalysisCanvas');
+        const pCtx = phaseCanvas.getContext('2d');
+        phaseCanvas.width = 256;
+        phaseCanvas.height = 256;
+
+        let lastComputedWrappedPhase = null;
+        let lastComputedUnwrappedPhase = null;
+
+        function calculatePhaseAndUnwrap() {
+            const w = phaseCanvas.width;
+            const h = phaseCanvas.height;
+            const totalPixels = w * h;
+
+            const wrapped = new Float32Array(totalPixels);
+            const unwrapped = new Float32Array(totalPixels);
+
+            const baseline = state.cam.x - state.proj.x;
+            const distZ = state.board.z;
+
+            for (let v = 0; v < h; v++) {
+                const ny = (v / h) * 2 - 1;
+                for (let u = 0; u < w; u++) {
+                    const nx = (u / w) * 2 - 1;
+                    const x_board = nx * 1.6;
+                    const y_board = -ny * 1.6;
+
+                    let z_height = 0;
+                    if (state.activeObjectType === 'sphere') {
+                        const r = 1.2;
+                        const dSq = x_board*x_board + y_board*y_board;
+                        if (dSq < r*r) z_height = Math.sqrt(r*r - dSq);
+                    } else if (state.activeObjectType === 'face') {
+                        const baseDome = 0.4 * Math.exp(-(x_board*x_board + y_board*y_board)/2.0);
+                        const nose = 0.8 * Math.exp(-((x_board*x_board)/0.06 + ((y_board - 0.25)*(y_board - 0.25))/0.22));
+                        const cheekL = 0.32 * Math.exp(-(((x_board + 0.5)*(x_board + 0.5))/0.14 + ((y_board + 0.1)*(y_board + 0.1))/0.18));
+                        const cheekR = 0.32 * Math.exp(-(((x_board - 0.5)*(x_board - 0.5))/0.14 + ((y_board + 0.1)*(y_board + 0.1))/0.18));
+                        const chin = 0.25 * Math.exp(-((x_board*x_board)/0.12 + ((y_board + 0.85)*(y_board + 0.85))/0.12));
+                        const forehead = 0.15 * Math.exp(-((x_board*x_board)/0.6 + ((y_board - 0.8)*(y_board - 0.8))/0.3));
+                        const leftEye = -0.12 * Math.exp(-(((x_board + 0.38)*(x_board + 0.38))/0.08 + ((y_board - 0.45)*(y_board - 0.45))/0.08));
+                        const rightEye = -0.12 * Math.exp(-(((x_board - 0.38)*(x_board - 0.38))/0.08 + ((y_board - 0.45)*(y_board - 0.45))/0.08));
+                        z_height = baseDome + nose + cheekL + cheekR + chin + forehead + leftEye + rightEye;
+                    } else if (state.activeObjectType === 'peaks') {
+                        z_height = 0.35 * Math.sin(x_board * 3.2) * Math.cos(y_board * 3.2) + 0.18 * Math.cos(x_board * 6.5) + 0.15 * Math.sin(y_board * 5.0);
+                    }
+
+                    const projShiftX = x_board - (z_height * (baseline / distZ)) * 0.75;
+                    const truePhase = projShiftX * state.fringe.frequency * 3.0;
+
+                    let wrappedPhase = Math.atan2(Math.sin(truePhase), Math.cos(truePhase));
+
+                    if (x_board*x_board + y_board*y_board > 1.35 * 1.35 && state.activeObjectType !== 'peaks') {
+                        wrappedPhase = -999.0;
+                    }
+
+                    const idx = v * w + u;
+                    wrapped[idx] = wrappedPhase;
+                    unwrapped[idx] = wrappedPhase === -999.0 ? -999.0 : truePhase;
+                }
+            }
+
+            lastComputedWrappedPhase = wrapped;
+            lastComputedUnwrappedPhase = unwrapped;
+
+            renderPhaseCanvas();
+        }
+
+        function renderPhaseCanvas() {
+            if (!lastComputedWrappedPhase) return;
+
+            const w = phaseCanvas.width;
+            const h = phaseCanvas.height;
+            const imgData = pCtx.createImageData(w, h);
+            const data = imgData.data;
+
+            const isWrapped = state.phaseStateView === 'wrapped';
+            document.getElementById('lblPhaseState').innerText = isWrapped ? "包裹相位范围: [-π, π]" : "解包裹绝对相位梯度";
+
+            for (let i = 0; i < w * h; i++) {
+                const idx = i * 4;
+                const val = isWrapped ? lastComputedWrappedPhase[i] : lastComputedUnwrappedPhase[i];
+
+                if (val === -999.0) {
+                    data[idx] = 10;
+                    data[idx+1] = 15;
+                    data[idx+2] = 25;
+                    data[idx+3] = 255;
+                    continue;
+                }
+
+                let colorIntensity = 0;
+                if (isWrapped) {
+                    colorIntensity = Math.floor(((val + Math.PI) / (Math.PI * 2)) * 255);
+                    data[idx] = colorIntensity;      
+                    data[idx+1] = colorIntensity;    
+                    data[idx+2] = Math.floor(colorIntensity * 0.5); 
+                } else {
+                    colorIntensity = Math.floor(((val + 15) / 30) * 255);
+                    colorIntensity = Math.max(0, Math.min(255, colorIntensity));
+                    data[idx] = Math.floor(colorIntensity * 0.3);
+                    data[idx+1] = colorIntensity;
+                    data[idx+2] = Math.floor(colorIntensity * 0.9);
+                }
+                data[idx+3] = 255;
+            }
+            pCtx.putImageData(imgData, 0, 0);
+        }
+
+        // ------------------ 8. 右侧：3D 重建密集点云视口 (Points Render) ------------------
+        const pcContainer = document.getElementById('pointCloudContainer');
+        const pcScene = new THREE.Scene();
+        pcScene.background = new THREE.Color(0x020408);
+
+        const pcCamera = new THREE.PerspectiveCamera(40, pcContainer.clientWidth / pcContainer.clientHeight, 0.1, 20);
+        pcCamera.position.set(0, 0, 4.5);
+
+        const pcRenderer = new THREE.WebGLRenderer({ canvas: document.getElementById('reconstructedCloudCanvas'), antialias: true });
+        pcRenderer.setSize(pcContainer.clientWidth, pcContainer.clientHeight);
+        pcRenderer.setPixelRatio(window.devicePixelRatio);
+
+        const pcControls = new THREE.OrbitControls(pcCamera, pcRenderer.domElement);
+        pcControls.enableDamping = true;
+        pcControls.dampingFactor = 0.05;
+
+        let reconstructedPointsMesh = null;
+
+        function rebuild3DPointCloud() {
+            if (reconstructedPointsMesh) {
+                pcScene.remove(reconstructedPointsMesh);
+            }
+
+            const w = phaseCanvas.width;
+            const h = phaseCanvas.height;
+            const positions = [];
+            const colors = [];
+
+            const colorHelper = new THREE.Color();
+            const baseline = state.cam.x - state.proj.x;
+            const distZ = state.board.z;
+
+            for (let v = 0; v < h; v += 1) {
+                const ny = (v / h) * 2 - 1;
+                for (let u = 0; u < w; u += 1) {
+                    const idx = v * w + u;
+                    const absPhase = lastComputedUnwrappedPhase[idx];
+
+                    if (absPhase === -999.0) continue;
+
+                    const x_board = (u / w) * 3.5 - 1.75;
+                    const y_board = -(v / h) * 3.5 + 1.75;
+
+                    const projShiftX = absPhase / (state.fringe.frequency * 3.0);
+                    const z_height = (x_board - projShiftX) / (0.75 * (baseline / distZ));
+
+                    positions.push(x_board, y_board, z_height);
+
+                    const normalizedZ = (z_height + 0.2) / 1.5;
+                    colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
+                    colors.push(colorHelper.r, colorHelper.g, colorHelper.b);
+                }
+            }
+
+            const pGeom = new THREE.BufferGeometry();
+            pGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            pGeom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const pMat = new THREE.PointsMaterial({
+                size: 0.05,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.9,
+                sizeAttenuation: true
+            });
+
+            reconstructedPointsMesh = new THREE.Points(pGeom, pMat);
+            pcScene.add(reconstructedPointsMesh);
+
+            document.getElementById('lblPointCount').innerText = `Points: ${positions.length / 3}`;
+        }
+
+        // ------------------ 9. 四步相移自动化物理采集过程 ------------------
+        let isAcquiring = false;
+
+        async function triggerFourStepPhaseAcquisition() {
+            if (isAcquiring) return;
+            isAcquiring = true;
+            
+            const runBtn = document.getElementById('btnRunReconstruction');
+            runBtn.disabled = true;
+            runBtn.classList.add('opacity-50');
+
+            const phases = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
+            const angleLabels = ["0°", "90°", "180°", "270°"];
+
+            for (let i = 0; i < 4; i++) {
+                runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在采集第 ${i+1}/4 帧 (${angleLabels[i]})...`;
+                lucide.createIcons();
+                
+                state.fringe.phase = phases[i];
+                updateProjectorMatrix();
+                drawCameraCCDView(phases[i]);
+
+                await new Promise(res => setTimeout(res, 350));
+            }
+
+            calculatePhaseAndUnwrap();
+            rebuild3DPointCloud();
+
+            runBtn.disabled = false;
+            runBtn.classList.remove('opacity-50');
+            runBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-emerald-400"></i> 点云重建已就绪`;
+            lucide.createIcons();
+
+            isAcquiring = false;
+            showNotification("重建成功", "四步相移相位解调完毕，3D 点云已成功生成并在右下角视口渲染！", "success");
+        }
+
+        document.getElementById('btnRunReconstruction').addEventListener('click', triggerFourStepPhaseAcquisition);
+
+        // ------------------ 10. UI 与参数滑块绑定 ------------------
+        const optSphere = document.getElementById('btnObjSphere');
+        const optFace = document.getElementById('btnObjFace');
+        const optPeaks = document.getElementById('btnObjPeaks');
+
+        function selectObject(type) {
+            state.activeObjectType = type;
+            optSphere.className = type === 'sphere' ? "py-1.5 px-2 bg-indigo-600 border border-indigo-500 rounded text-xs font-semibold text-white transition" : "py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition";
+            optFace.className = type === 'face' ? "py-1.5 px-2 bg-indigo-600 border border-indigo-500 rounded text-xs font-semibold text-white transition" : "py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition";
+            optPeaks.className = type === 'peaks' ? "py-1.5 px-2 bg-indigo-600 border border-indigo-500 rounded text-xs font-semibold text-white transition" : "py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition";
+            
+            updateTargetObject();
+            drawCameraCCDView(state.fringe.phase);
+            calculatePhaseAndUnwrap();
+            rebuild3DPointCloud();
+        }
+
+        optSphere.addEventListener('click', () => selectObject('sphere'));
+        optFace.addEventListener('click', () => selectObject('face'));
+        optPeaks.addEventListener('click', () => selectObject('peaks'));
+
+        const projXInput = document.getElementById('projX');
+        const fringeFreqInput = document.getElementById('fringeFreq');
+        const phaseShiftInput = document.getElementById('phaseShift');
+        const camXInput = document.getElementById('camX');
+        const boardZInput = document.getElementById('boardZ');
+
+        function updateUIElementsFromState() {
+            projXInput.value = state.proj.x;
+            document.getElementById('projXVal').innerText = `${state.proj.x.toFixed(1)} m`;
+
+            fringeFreqInput.value = state.fringe.frequency;
+            document.getElementById('fringeFreqVal').innerText = `${state.fringe.frequency.toFixed(1)} rad/m`;
+
+            phaseShiftInput.value = Math.round((state.fringe.phase * 180) / Math.PI);
+            document.getElementById('phaseShiftVal').innerText = `${Math.round((state.fringe.phase * 180) / Math.PI)}°`;
+
+            camXInput.value = state.cam.x;
+            document.getElementById('camXVal').innerText = `${state.cam.x.toFixed(1)} m`;
+
+            boardZInput.value = state.board.z;
+            document.getElementById('boardZVal').innerText = `${state.board.z.toFixed(1)} m`;
+        }
+
+        projXInput.addEventListener('input', (e) => {
+            state.proj.x = parseFloat(e.target.value);
+            document.getElementById('projXVal').innerText = `${state.proj.x.toFixed(1)} m`;
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        fringeFreqInput.addEventListener('input', (e) => {
+            state.fringe.frequency = parseFloat(e.target.value);
+            document.getElementById('fringeFreqVal').innerText = `${state.fringe.frequency.toFixed(1)} rad/m`;
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        phaseShiftInput.addEventListener('input', (e) => {
+            const angleDeg = parseFloat(e.target.value);
+            state.fringe.phase = (angleDeg * Math.PI) / 180;
+            document.getElementById('phaseShiftVal').innerText = `${angleDeg.toFixed(0)}°`;
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        camXInput.addEventListener('input', (e) => {
+            state.cam.x = parseFloat(e.target.value);
+            document.getElementById('camXVal').innerText = `${state.cam.x.toFixed(1)} m`;
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        boardZInput.addEventListener('input', (e) => {
+            state.board.z = parseFloat(e.target.value);
+            document.getElementById('boardZVal').innerText = `${state.board.z.toFixed(1)} m`;
+            targetMesh.position.set(0, 0, state.board.z);
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            state.proj.x = -2.0;
+            state.fringe.frequency = 8.0;
+            state.fringe.phase = 0.0;
+            state.cam.x = 2.0;
+            state.board.z = 5.0;
+            state.activeObjectType = 'face';
+
+            updateUIElementsFromState();
+            selectObject('face');
+            controls.reset();
+            mainCamera.position.set(0, 5, 8);
+            showNotification("实验室重置", "全部硬件状态已还原至标准状态", "success");
+        });
+
+        const btnShowWrapped = document.getElementById('btnShowWrapped');
+        const btnShowUnwrapped = document.getElementById('btnShowUnwrapped');
+
+        btnShowWrapped.addEventListener('click', () => {
+            state.phaseStateView = 'wrapped';
+            btnShowWrapped.className = "text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition";
+            btnShowUnwrapped.className = "text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition";
+            renderPhaseCanvas();
+        });
+
+        btnShowUnwrapped.addEventListener('click', () => {
+            state.phaseStateView = 'unwrapped';
+            btnShowUnwrapped.className = "text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition";
+            btnShowWrapped.className = "text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition";
+            renderPhaseCanvas();
+        });
+
+        // ------------------ 11. ✨ Gemini API 物理及学术导师模块 ------------------
+        const drawer = document.getElementById('aiReportDrawer');
+        
+        document.getElementById('btnCloseDrawer').addEventListener('click', () => {
+            drawer.className = "absolute right-3 top-3 bottom-76 w-80 bg-slate-900/95 border border-slate-800 rounded-xl overflow-hidden shadow-2xl z-20 flex flex-col transform translate-x-[350px] opacity-0 pointer-events-none transition duration-300";
+        });
+
+        function openDrawer() {
+            drawer.className = "absolute right-3 top-3 bottom-76 w-80 bg-slate-900/95 border border-slate-800 rounded-xl overflow-hidden shadow-2xl z-20 flex flex-col transform translate-x-0 opacity-100 pointer-events-auto transition duration-300";
+        }
+
+        document.querySelectorAll('.ai-preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.getElementById('aiCustomInput').value = btn.getAttribute('data-prompt');
+            });
+        });
+
+        // A. 自动配置硬件系统 (Structured Output 模式)
+        document.getElementById('aiConfigureBtn').addEventListener('click', async () => {
+            const customInput = document.getElementById('aiCustomInput').value.trim();
+            if (!customInput) {
+                showNotification("配置失败", "请输入或选择你想模拟的光学实验需求", "error");
+                return;
+            }
+
+            showAILoading("✨ AI导师正在解算硬件几何配置与最佳条纹频率...");
+
+            const systemPrompt = `你是一个研究主动光栅扫描、三维结构光计算、傅里叶变换解相的高级光学实验室导师。
+你现在需要为学生计算最优的硬件布局和投影正弦条纹空间频率。
+你需要严格遵守以下各参数在 3D 仿真器中支持的物理界限 constraints：
+1. 投影仪 X 轴基线 (projX): 范围 [-5.0, -0.5] (必须为负数)。
+2. 条纹频率 (frequency): 范围 [2.0, 25.0] rad/m。
+3. 摄像机 X 轴基线 (camX): 范围 [0.5, 5.0] (必须为正数)。
+4. 物体 Z 轴距离 (boardZ): 范围 [3.0, 8.0] 米。
+
+请在计算过程中阐明：为什么你建议的条纹频率能在细节敏感度（Sensitivity）与解相多值模糊（Phase Ambiguity）之间获得完美平衡。`;
+
+            const payload = {
+                contents: [{
+                    parts: [{ text: `我目前的实验场景是：\n"${customInput}"\n请计算最优配置组合。` }]
+                }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            projX: { type: "NUMBER", description: "投影仪 X 轴位置" },
+                            frequency: { type: "NUMBER", description: "条纹空间频率" },
+                            camX: { type: "NUMBER", description: "相机 X 轴位置" },
+                            boardZ: { type: "NUMBER", description: "被测物体 Z 轴位置" },
+                            explanation: { type: "STRING", description: "用简洁而优美、高度学术化的中文（可包含 Markdown 和 LaTeX 物理公式）阐明你这套设计的优势以及相高反演三角数学。限制在180字以内。" }
+                        },
+                        required: ["projX", "frequency", "camX", "boardZ", "explanation"]
+                    }
+                }
+            };
+
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+            try {
+                const responseData = await fetchGeminiWithRetry(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const rawJsonText = responseData.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!rawJsonText) throw new Error("AI 接口返回数据为空");
+
+                const config = JSON.parse(rawJsonText);
+
+                state.proj.x = Number(config.projX);
+                state.fringe.frequency = Number(config.frequency);
+                state.cam.x = Number(config.camX);
+                state.board.z = Number(config.boardZ);
+
+                updateUIElementsFromState();
+                targetMesh.position.set(0, 0, state.board.z);
+                updateProjectorMatrix();
+                drawCameraCCDView(state.fringe.phase);
+
+                calculatePhaseAndUnwrap();
+                rebuild3DPointCloud();
+
+                const rContent = document.getElementById('aiReportContent');
+                rContent.innerHTML = marked.parse(`### ✨ 硬件系统调校成功！\n\n**【AI 导师学术说明】**：\n${config.explanation}\n\n` +
+                    `**当前配置方案：**\n` +
+                    `* 物理基线 $B$: \`$${(state.cam.x - state.proj.x).toFixed(2)} m$\` (优化的基深比 $\\frac{B}{Z}$)\n` +
+                    `* 条纹频率 $f$: \`$${state.fringe.frequency.toFixed(2)} rad/m$\``);
+
+                openDrawer();
+                showNotification("AI 配置成功", "已为您自动优化硬件几何光栅布局", "success");
+
+            } catch (err) {
+                console.error(err);
+                showNotification("AI 导师配置超时", "Gemini 物理链路响应失败，请检查网络后再试", "error");
+            } finally {
+                hideAILoading();
+            }
+        });
+
+        // B. 诊断当前系统相移解相质量
+        document.getElementById('aiDiagnoseBtn').addEventListener('click', async () => {
+            showAILoading("🔍 正在评估当前光路条纹自适应相位质量及重构噪点...");
+
+            const currentSetupJson = JSON.stringify({
+                baseline: state.cam.x - state.proj.x,
+                fringeFrequency: state.fringe.frequency,
+                targetObject: state.activeObjectType,
+                boardDepthZ: state.board.z,
+                sensitivityRatio: ((state.cam.x - state.proj.x) / state.board.z).toFixed(3)
+            }, null, 2);
+
+            const systemPrompt = `你是一个结构光光学研究、计算机三维视觉方向的博士生导师。
+你需要根据当前系统的配置数据，给出一份学术化的【解相质量诊断分析】。
+在分析报告中，你应当：
+1. 分析条纹频率对空间解包裹算法的影响。如果频率过高（例如 $f > 15$），指出是否会面临严重的周跳与解相模糊 $2\\pi$ 混叠。
+2. 评估基深比 $\\frac{B}{Z}$ 与深度精度的物理关系。
+3. 运用 LaTeX 公式（如 $\\Delta\\Phi = \\frac{2\\pi f B \\cdot \\Delta z}{Z}$）深入推导当前的系统解算误差边界。
+语言要严谨、富有逻辑性和学术评议深度。`;
+
+            const payload = {
+                contents: [{
+                    parts: [{ text: `这是当前仿真实验室中调试好的相移干涉硬件系统：\n\`\`\`json\n${currentSetupJson}\n\`\`\`\n请提供系统性诊断。` }]
+                }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                }
+            };
+
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+            try {
+                const responseData = await fetchGeminiWithRetry(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const rawReport = responseData.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!rawReport) throw new Error("诊断报告数据损坏");
+
+                const rContent = document.getElementById('aiReportContent');
+                rContent.innerHTML = marked.parse(rawReport);
+                openDrawer();
+
+                showNotification("诊断完成", "相移自适应质量诊断书已生成", "success");
+
+            } catch (err) {
+                console.error(err);
+                showNotification("诊断失败", "AI 诊断模块暂时断线", "error");
+            } finally {
+                hideAILoading();
+            }
+        });
+
+        // ------------------ 12. 切换选项卡 ------------------
+        const tabPhysics = document.getElementById('tabPhysics');
+        const tabAI = document.getElementById('tabAI');
+        const physicsPanel = document.getElementById('physicsPanel');
+        const aiPanel = document.getElementById('aiPanel');
+
+        tabPhysics.addEventListener('click', () => {
+            tabPhysics.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 bg-slate-800 text-slate-100 flex items-center justify-center gap-1.5";
+            tabAI.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 text-slate-400 hover:text-slate-100 flex items-center justify-center gap-1.5";
+            physicsPanel.classList.remove('hidden');
+            aiPanel.classList.add('hidden');
+        });
+
+        tabAI.addEventListener('click', () => {
+            tabAI.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 bg-slate-800 text-slate-100 flex items-center justify-center gap-1.5";
+            tabPhysics.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 text-slate-400 hover:text-slate-100 flex items-center justify-center gap-1.5";
+            aiPanel.classList.remove('hidden');
+            physicsPanel.classList.add('hidden');
+        });
+
+        // ------------------ 13. 页面尺寸自适应 ------------------
+        window.addEventListener('resize', () => {
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            mainCamera.aspect = width / height;
+            mainCamera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+
+            pcCamera.aspect = pcContainer.clientWidth / pcContainer.clientHeight;
+            pcCamera.updateProjectionMatrix();
+            pcRenderer.setSize(pcContainer.clientWidth, pcContainer.clientHeight);
+        });
+
+        // ------------------ 14. 渲染动力学大循环 ------------------
+        function animate() {
+            requestAnimationFrame(animate);
+
+            controls.update();
+            pcControls.update();
+
+            renderer.render(mainScene, mainCamera);
+            pcRenderer.render(pcScene, pcCamera);
+        }
+
+        // 初始化整个系统
+        updateTargetObject();
+        updateProjectorMatrix();
+        drawCameraCCDView(state.fringe.phase);
+        calculatePhaseAndUnwrap();
+        rebuild3DPointCloud();
+        animate();
+
+    </script>
+</body>
+</html>
