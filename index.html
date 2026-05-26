@@ -341,9 +341,9 @@
                         </div>
                     </div>
                     <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden p-2">
-                        <!-- aspect-ratio 确保画面绝不发生扁平化扭曲，object-fit: contain 确保大视图不被边缘遮挡 -->
-                        <canvas id="cameraSensorCanvas" class="max-w-full max-h-full block bg-black rounded"
-                            style="aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
+                        <!-- w-full h-auto max-h-full aspect-square object-contain 确保画面在任何分辨率下均保持完美正圆且不被遮挡 -->
+                        <canvas id="cameraSensorCanvas"
+                            class="w-full h-auto max-h-full aspect-square object-contain block bg-black rounded"></canvas>
                     </div>
                 </div>
 
@@ -370,9 +370,9 @@
                     </div>
                     <div class="flex-1 bg-black flex items-center justify-center p-2">
                         <div class="w-full h-full relative flex items-center justify-center">
-                            <!-- aspect-ratio 2D 相位图修正 -->
-                            <canvas id="phaseAnalysisCanvas" class="max-w-full max-h-full block bg-black rounded"
-                                style="aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
+                            <!-- w-full h-auto max-h-full aspect-square object-contain 2D 相位图修正 -->
+                            <canvas id="phaseAnalysisCanvas"
+                                class="w-full h-auto max-h-full aspect-square object-contain block bg-black rounded"></canvas>
                             <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono"
                                 id="lblPhaseState">
                                 包裹相位范围: [-π, π]
@@ -1394,6 +1394,10 @@
         drawCameraCCDView(state.fringe.phase);
         calculatePhaseAndUnwrap();
         rebuild3DPointCloud();
+
+        // 🌟 极其关键：强制分发一次 resize 信号，让 Three.js 主视口和 3D 点云视口自动根据排版完美对齐，根治初次载入拉伸 Bug
+        window.dispatchEvent(new Event('resize'));
+
         animate();
 
     </script>
