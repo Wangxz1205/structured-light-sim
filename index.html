@@ -320,8 +320,9 @@
             </div>
 
             <!-- 下部分：双画布画中画 (相机感光拍摄 vs 三维重建密集点云) -->
+            <!-- 💡 极其重要：必须在 class 中添加 overflow-hidden，否则折叠到 0px 时子卡片会溢出，导致无法再次点击展开 -->
             <div id="bottomDock"
-                class="h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-3 gap-3 p-3 relative z-10 transition-all duration-300">
+                class="h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-3 gap-3 p-3 relative z-10 transition-all duration-300 overflow-hidden">
 
                 <!-- 1. 左侧：相机拍摄视口 (Camera Fringe Pattern) -->
                 <div id="sensorContainer"
@@ -341,9 +342,9 @@
                         </div>
                     </div>
                     <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden p-2">
-                        <!-- w-full h-auto max-h-full aspect-square object-contain 确保画面在任何分辨率下均保持完美正圆且不被遮挡 -->
-                        <canvas id="cameraSensorCanvas"
-                            class="w-full h-auto max-h-full aspect-square object-contain block bg-black rounded"></canvas>
+                        <!-- w-auto h-auto 并配合 max 和 aspect-ratio 确保光斑画面在任何分辨率下均保持完美的正圆，且绝对不会被四周边缘裁剪遮挡 -->
+                        <canvas id="cameraSensorCanvas" class="max-w-full max-h-full block bg-black rounded"
+                            style="width: auto; height: auto; max-width: 100%; max-height: 100%; aspect-ratio: 1 / 1;"></canvas>
                     </div>
                 </div>
 
@@ -370,9 +371,9 @@
                     </div>
                     <div class="flex-1 bg-black flex items-center justify-center p-2">
                         <div class="w-full h-full relative flex items-center justify-center">
-                            <!-- w-full h-auto max-h-full aspect-square object-contain 2D 相位图修正 -->
-                            <canvas id="phaseAnalysisCanvas"
-                                class="w-full h-auto max-h-full aspect-square object-contain block bg-black rounded"></canvas>
+                            <!-- aspect-ratio 2D 相位图修正，彻底消除上下切边 -->
+                            <canvas id="phaseAnalysisCanvas" class="max-w-full max-h-full block bg-black rounded"
+                                style="width: auto; height: auto; max-width: 100%; max-height: 100%; aspect-ratio: 1 / 1;"></canvas>
                             <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono"
                                 id="lblPhaseState">
                                 包裹相位范围: [-π, π]
@@ -1370,6 +1371,7 @@
                 bottomDock.style.height = '0px';
                 bottomDock.style.padding = '0px';
                 bottomDock.style.borderTopWidth = '0px';
+                bottomDock.style.overflow = 'hidden'; // 👈 双重保险：确保折叠后子卡片物理隐藏，不产生任何点击遮挡
                 txtToggleBottom.innerText = '展开分析视口';
                 btnToggleBottom.innerHTML = `<i data-lucide="layout-panel-left" class="w-4 h-4 text-slate-400"></i><span>展开分析视口</span>`;
                 isBottomDockCollapsed = true;
