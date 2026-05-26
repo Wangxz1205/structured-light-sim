@@ -341,10 +341,11 @@
                             </button>
                         </div>
                     </div>
-                    <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden p-2">
-                        <!-- w-auto h-auto 并配合 max 和 aspect-ratio 确保光斑画面在任何分辨率下均保持完美的正圆，且绝对不会被四周边缘裁剪遮挡 -->
-                        <canvas id="cameraSensorCanvas" class="max-w-full max-h-full block bg-black rounded"
-                            style="width: auto; height: auto; max-width: 100%; max-height: 100%; aspect-ratio: 1 / 1;"></canvas>
+                    <!-- 🌟 关键修改：添加 min-h-0，解决 Flex 默认最小尺寸计算导致的 Canvas 纵向溢出遮挡 Bug -->
+                    <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden p-2">
+                        <!-- style 去除 w-full，使用 max-width/max-height 以 1:1 纵横比自适应缩放，预留 95% 安全区域绝不遮挡 -->
+                        <canvas id="cameraSensorCanvas" class="block bg-black rounded"
+                            style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
                     </div>
                 </div>
 
@@ -369,11 +370,11 @@
                             </button>
                         </div>
                     </div>
-                    <div class="flex-1 bg-black flex items-center justify-center p-2">
+                    <!-- 🌟 关键修改：添加 min-h-0，解决 Flex 默认最小尺寸计算导致的 Canvas 纵向溢出遮挡 Bug -->
+                    <div class="flex-1 min-h-0 bg-black flex items-center justify-center p-2 overflow-hidden">
                         <div class="w-full h-full relative flex items-center justify-center">
-                            <!-- aspect-ratio 2D 相位图修正，彻底消除上下切边 -->
-                            <canvas id="phaseAnalysisCanvas" class="max-w-full max-h-full block bg-black rounded"
-                                style="width: auto; height: auto; max-width: 100%; max-height: 100%; aspect-ratio: 1 / 1;"></canvas>
+                            <canvas id="phaseAnalysisCanvas" class="block bg-black rounded"
+                                style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
                             <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono"
                                 id="lblPhaseState">
                                 包裹相位范围: [-π, π]
@@ -399,7 +400,7 @@
                             </button>
                         </div>
                     </div>
-                    <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden"
+                    <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden"
                         id="pointCloudContainer">
                         <canvas id="reconstructedCloudCanvas" class="w-full h-full block bg-black"></canvas>
                         <!-- 点云操作小浮窗 -->
@@ -411,6 +412,7 @@
                 </div>
 
             </div>
+
 
             <!-- 学术诊断/AI 提示报告悬浮侧拉式抽屉 -->
             <div id="aiReportDrawer"
@@ -1371,17 +1373,34 @@
                 bottomDock.style.height = '0px';
                 bottomDock.style.padding = '0px';
                 bottomDock.style.borderTopWidth = '0px';
-                bottomDock.style.overflow = 'hidden'; // 👈 双重保险：确保折叠后子卡片物理隐藏，不产生任何点击遮挡
-                txtToggleBottom.innerText = '展开分析视口';
-                btnToggleBottom.innerHTML = `<i data-lucide="layout-panel-left" class="w-4 h-4 text-slate-400"></i><span>展开分析视口</span>`;
+                bottomDock.style.overflow = 'hidden'; // 双重保险：确保折叠后子卡片物理隐藏，不产生任何点击遮挡
+
+                if (txtToggleBottom) {
+                    txtToggleBottom.innerText = '展开分析视口';
+                }
+
+                const icon = btnToggleBottom.querySelector('i');
+                if (icon) {
+                    icon.className = 'w-4 h-4 text-slate-400';
+                    icon.setAttribute('data-lucide', 'layout-panel-left');
+                }
                 isBottomDockCollapsed = true;
             } else {
                 // 展开
                 bottomDock.style.height = '280px';
                 bottomDock.style.padding = '0.75rem';
                 bottomDock.style.borderTopWidth = '1px';
-                txtToggleBottom.innerText = '收起分析视口';
-                btnToggleBottom.innerHTML = `<i data-lucide="layout-panel-left" class="w-4 h-4 text-indigo-400"></i><span>收起分析视口</span>`;
+                bottomDock.style.overflow = 'hidden'; // 保持隐藏溢出以防止滚动条
+
+                if (txtToggleBottom) {
+                    txtToggleBottom.innerText = '收起分析视口';
+                }
+
+                const icon = btnToggleBottom.querySelector('i');
+                if (icon) {
+                    icon.className = 'w-4 h-4 text-indigo-400';
+                    icon.setAttribute('data-lucide', 'layout-panel-left');
+                }
                 isBottomDockCollapsed = false;
             }
             lucide.createIcons();
