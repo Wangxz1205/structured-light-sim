@@ -282,6 +282,15 @@
 
             <!-- 上部分：主 3D 实验室场景 (正弦条纹投影展示) -->
             <div class="flex-1 relative" id="canvasContainer">
+                <!-- 右上角悬浮的隐藏/展开下方视口控制面板 -->
+                <div class="absolute top-4 right-4 z-10">
+                    <button id="btnToggleBottomDock"
+                        class="bg-slate-900/90 border border-slate-850 text-slate-200 hover:text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-lg flex items-center gap-1.5 transition">
+                        <i data-lucide="layout-panel-left" class="w-4 h-4 text-indigo-400"></i>
+                        <span id="txtToggleBottom">收起分析视口</span>
+                    </button>
+                </div>
+
                 <div
                     class="absolute top-4 left-4 bg-slate-900/95 border border-slate-800 p-3 rounded-lg z-10 shadow-lg pointer-events-none">
                     <h4 class="text-xs font-bold text-slate-200 flex items-center">
@@ -311,41 +320,59 @@
             </div>
 
             <!-- 下部分：双画布画中画 (相机感光拍摄 vs 三维重建密集点云) -->
-            <div class="h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-3 gap-3 p-3 relative z-10">
+            <div id="bottomDock"
+                class="h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-3 gap-3 p-3 relative z-10 transition-all duration-300">
 
                 <!-- 1. 左侧：相机拍摄视口 (Camera Fringe Pattern) -->
-                <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative">
+                <div id="sensorContainer"
+                    class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300">
                     <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
                         <span class="text-xs font-semibold text-rose-400 flex items-center">
                             <i data-lucide="camera" class="w-3.5 h-3.5 mr-1"></i>
                             相机传感器拍摄视图
                         </span>
-                        <span class="text-[10px] bg-rose-500/15 text-rose-400 px-1.5 rounded font-mono">Camera
-                            CCD</span>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-[10px] bg-rose-500/15 text-rose-400 px-1.5 rounded font-mono">Camera
+                                CCD</span>
+                            <button class="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition"
+                                onclick="toggleMaximizeWindow('sensor')" data-window-btn="sensor" title="最大化视口">
+                                <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
                     </div>
-                    <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
-                        <canvas id="cameraSensorCanvas" class="w-full h-full block bg-black"></canvas>
+                    <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden p-2">
+                        <!-- aspect-ratio 确保画面绝不发生扁平化扭曲，object-fit: contain 确保大视图不被边缘遮挡 -->
+                        <canvas id="cameraSensorCanvas" class="max-w-full max-h-full block bg-black rounded"
+                            style="aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
                     </div>
                 </div>
 
                 <!-- 2. 中间：相移解算过程展示 (Wrapped / Unwrapped Phase) -->
-                <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative">
+                <div id="phaseContainer"
+                    class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300">
                     <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
                         <span class="text-xs font-semibold text-cyan-400 flex items-center">
                             <i data-lucide="binary" class="w-3.5 h-3.5 mr-1"></i>
                             解相图像状态 (2D Phase)
                         </span>
-                        <div class="flex space-x-2">
-                            <button id="btnShowWrapped"
-                                class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition">包裹相位</button>
-                            <button id="btnShowUnwrapped"
-                                class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition">绝对相位</button>
+                        <div class="flex items-center space-x-2">
+                            <div class="flex space-x-1">
+                                <button id="btnShowWrapped"
+                                    class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition">包裹相位</button>
+                                <button id="btnShowUnwrapped"
+                                    class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition">绝对相位</button>
+                            </div>
+                            <button class="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition"
+                                onclick="toggleMaximizeWindow('phase')" data-window-btn="phase" title="最大化视口">
+                                <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+                            </button>
                         </div>
                     </div>
                     <div class="flex-1 bg-black flex items-center justify-center p-2">
-                        <!-- 解相分析画布 -->
-                        <div class="w-full h-full relative">
-                            <canvas id="phaseAnalysisCanvas" class="w-full h-full block bg-black rounded"></canvas>
+                        <div class="w-full h-full relative flex items-center justify-center">
+                            <!-- aspect-ratio 2D 相位图修正 -->
+                            <canvas id="phaseAnalysisCanvas" class="max-w-full max-h-full block bg-black rounded"
+                                style="aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
                             <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono"
                                 id="lblPhaseState">
                                 包裹相位范围: [-π, π]
@@ -355,14 +382,21 @@
                 </div>
 
                 <!-- 3. 右侧：3D 重建密集点云视口 (Reconstructed Point Cloud) -->
-                <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative">
+                <div id="cloudContainerWindow"
+                    class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300">
                     <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
                         <span class="text-xs font-semibold text-emerald-400 flex items-center">
                             <i data-lucide="boxes" class="w-3.5 h-3.5 mr-1"></i>
                             重组 3D 点云视口
                         </span>
-                        <span class="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 rounded font-mono"
-                            id="lblPointCount">Points: 0</span>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 rounded font-mono"
+                                id="lblPointCount">Points: 0</span>
+                            <button class="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition"
+                                onclick="toggleMaximizeWindow('cloud')" data-window-btn="cloud" title="最大化视口">
+                                <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="flex-1 bg-black relative flex items-center justify-center overflow-hidden"
                         id="pointCloudContainer">
@@ -1263,9 +1297,13 @@
             mainCamera.updateProjectionMatrix();
             renderer.setSize(width, height);
 
-            pcCamera.aspect = pcContainer.clientWidth / pcContainer.clientHeight;
-            pcCamera.updateProjectionMatrix();
-            pcRenderer.setSize(pcContainer.clientWidth, pcContainer.clientHeight);
+            // 动态读取 pointCloudContainer 的实时宽高，确保最大化时点云视口自动扩增填充
+            const pcCont = document.getElementById('pointCloudContainer');
+            if (pcCont && pcCamera && pcRenderer) {
+                pcCamera.aspect = pcCont.clientWidth / pcCont.clientHeight;
+                pcCamera.updateProjectionMatrix();
+                pcRenderer.setSize(pcCont.clientWidth, pcCont.clientHeight);
+            }
         });
 
         // ------------------ 14. 渲染动力学大循环 ------------------
@@ -1278,6 +1316,77 @@
             renderer.render(mainScene, mainCamera);
             pcRenderer.render(pcScene, pcCamera);
         }
+
+        // ------------------ 15. ✨ 深度优化：窗口最大化切换与重构自适应 ------------------
+        const windowStates = {
+            sensor: { id: 'sensorContainer', maximized: false, defaultClasses: 'bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300' },
+            phase: { id: 'phaseContainer', maximized: false, defaultClasses: 'bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300' },
+            cloud: { id: 'cloudContainerWindow', maximized: false, defaultClasses: 'bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300' }
+        };
+
+        function toggleMaximizeWindow(winKey) {
+            const win = windowStates[winKey];
+            const el = document.getElementById(win.id);
+            const btn = el.querySelector(`[data-window-btn="${winKey}"]`);
+
+            if (!win.maximized) {
+                // 1. 先将其他可能已经最大化的窗口还原
+                Object.keys(windowStates).forEach(key => {
+                    if (windowStates[key].maximized && key !== winKey) {
+                        toggleMaximizeWindow(key);
+                    }
+                });
+
+                // 2. 最大化当前窗口 (使用 fixed 铺满屏幕，z-50 浮于最顶层)
+                el.className = 'fixed inset-12 md:inset-20 z-50 bg-slate-900 border-2 border-indigo-500 rounded-2xl overflow-hidden flex flex-col shadow-2xl transition-all duration-300';
+                btn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4 text-indigo-400"></i>`;
+                win.maximized = true;
+                showNotification("窗口已放大", "您现在可以高保真观察解相信号与 3D 点云细节", "success");
+            } else {
+                // 3. 还原到原大小
+                el.className = win.defaultClasses;
+                btn.innerHTML = `<i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>`;
+                win.maximized = false;
+            }
+
+            // 4. 重构 Lucide 矢量图标
+            lucide.createIcons();
+
+            // 5. 极其关键：强制触发系统的 resize 事件，让 Three.js 密集点云渲染重新测算容器像素宽高度
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+            }, 100);
+        }
+
+        // ------------------ 16. 隐藏/展开下方 dock 的功能 ------------------
+        let isBottomDockCollapsed = false;
+        const btnToggleBottom = document.getElementById('btnToggleBottomDock');
+        const bottomDock = document.getElementById('bottomDock');
+        const txtToggleBottom = document.getElementById('txtToggleBottom');
+
+        btnToggleBottom.addEventListener('click', () => {
+            if (!isBottomDockCollapsed) {
+                // 折叠
+                bottomDock.style.height = '0px';
+                bottomDock.style.padding = '0px';
+                bottomDock.style.borderTopWidth = '0px';
+                txtToggleBottom.innerText = '展开分析视口';
+                btnToggleBottom.innerHTML = `<i data-lucide="layout-panel-left" class="w-4 h-4 text-slate-400"></i><span>展开分析视口</span>`;
+                isBottomDockCollapsed = true;
+            } else {
+                // 展开
+                bottomDock.style.height = '280px';
+                bottomDock.style.padding = '0.75rem';
+                bottomDock.style.borderTopWidth = '1px';
+                txtToggleBottom.innerText = '收起分析视口';
+                btnToggleBottom.innerHTML = `<i data-lucide="layout-panel-left" class="w-4 h-4 text-indigo-400"></i><span>收起分析视口</span>`;
+                isBottomDockCollapsed = false;
+            }
+            lucide.createIcons();
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+            }, 350);
+        });
 
         // 初始化整个系统
         updateTargetObject();
