@@ -512,27 +512,26 @@
         // 物理硬件设备模型 (投影仪，摄像机)
         function createHardwareModel(color) {
             const group = new THREE.Group();
-            // 主体机身：直接使用传入的 color 变量，让投影仪变成蓝色、相机变成红色
+
+            // 主体机身：改用 MeshBasicMaterial（基础自发光材质）
+            // 这样不需要任何灯光，它就能在黑暗中 100% 还原您设定的蓝色或红色！
             const bodyGeo = new THREE.BoxGeometry(0.5, 0.3, 0.6);
-            const bodyMat = new THREE.MeshStandardMaterial({
-                color: color,          // 👈 将这里改为 color 变量
-                roughness: 0.4,
-                metalness: 0.3
+            const bodyMat = new THREE.MeshBasicMaterial({
+                color: color
             });
             const body = new THREE.Mesh(bodyGeo, bodyMat);
             group.add(body);
 
-            // 镜头：将其固定为高反射的亮银色金属，显得更加专业
+            // 镜头：同样改用基础自发光材质，设为醒目的灰色
             const lensGeo = new THREE.CylinderGeometry(0.12, 0.15, 0.25, 16);
             lensGeo.rotateX(Math.PI / 2);
-            const lensMat = new THREE.MeshStandardMaterial({
-                color: 0xdddddd,       // 👈 镜头改为银白色
-                metalness: 0.9,        // 👈 极高的金属质感
-                roughness: 0.1
+            const lensMat = new THREE.MeshBasicMaterial({
+                color: 0xcccccc
             });
             const lens = new THREE.Mesh(lensGeo, lensMat);
             lens.position.set(0, 0, 0.35);
             group.add(lens);
+
             return group;
         }
 
