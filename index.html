@@ -326,7 +326,18 @@
                             重组 3D 点云视口
                         </span>
                         <div class="flex items-center space-x-2">
-                            <!-- 🌟 手动添加：一键导出点云数据按钮 -->
+                            <!-- 🌟 新增：高度/误差着色模式切换 -->
+                            <div class="flex bg-slate-950 p-0.5 rounded border border-slate-800 text-[9px] font-bold">
+                                <button id="btnColorHeight"
+                                    class="bg-indigo-600 text-white px-1.5 py-0.5 rounded transition">高度</button>
+                                <button id="btnColorError"
+                                    class="text-slate-400 px-1.5 py-0.5 rounded transition">误差</button>
+                            </div>
+                            <!-- 🌟 新增：RMSE 实时误差定量显示 -->
+                            <span
+                                class="text-[9px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded font-mono font-bold"
+                                id="lblRMSE">RMSE: 0.00 mm</span>
+                            <!-- 🌟 导出点云数据按钮 -->
                             <button onclick="downloadXYZ()"
                                 class="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 rounded transition flex items-center gap-1">
                                 <i data-lucide="download" class="w-3 h-3"></i> 导出数据
@@ -438,7 +449,8 @@
             board: {
                 z: 5.0
             },
-            phaseStateView: 'wrapped' // 'wrapped' | 'unwrapped'
+            phaseStateView: 'wrapped', // 'wrapped' | 'unwrapped'
+            pcColorMode: 'height' // 🌟 新增：'height' 按高度着色 | 'error' 按重建误差着色
         };
 
         // 🌟 新增：根据 mono COB 评测表预生成一维 Row / Col 空间固定模式噪声 (FPN) 纹理
@@ -958,6 +970,17 @@
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
 
+            // 1. 初始化误差累计变量
+            let sumSquareError = 0;
+            let activePointCount = 0;
+
+            // 根据实测环境照度模拟系统解相噪声水平 (照度越低，解相波动误差越大)
+            const lux = state.cam.lux;
+            let noiseAmplitude = 0.0;
+            if (lux < 5) noiseAmplitude = 0.09 * (5 - lux) / 4;
+            else if (lux < 50) noiseAmplitude = 0.02 * (50 - lux) / 45;
+            else noiseAmplitude = 0.003; // 高照度下系统精度达到最高
+
             for (let v = 0; v < h; v += 1) {
                 const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u += 1) {
@@ -969,13 +992,38 @@
                     const x_board = (u / w) * 3.5 - 1.75;
                     const y_board = -(v / h) * 3.5 + 1.75;
 
-                    const projShiftX = absPhase / (state.fringe.frequency * 3.0);
-                    const z_height = (x_board - projShiftX) / (0.75 * (baseline / distZ));
+                    // 真实高度 (Ground Truth)
+                    const projShiftX_ideal = absPhase / (state.fringe.frequency * 3.0);
+                    const z_gt = (x_board - projShiftX_ideal) / (0.75 * (baseline / distZ));
 
-                    positions.push(x_board, y_board, z_height);
+                    // 🌟 探测到的高度 (Reconstructed with Noise)
+                    // 模拟在光电接收、行列噪点以及量化下，最终解算出的带噪深度结果
+                    const reconstructionNoise = (Math.random() * 2 - 1) * noiseAmplitude * 1.5;
+                    const z_rec = z_gt + reconstructionNoise;
 
-                    const normalizedZ = (z_height + 0.2) / 1.5;
-                    colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
+                    positions.push(x_board, y_board, z_rec);
+
+                    // 🌟 核心：计算 Z 轴深度重建误差
+                    const errorZ = Math.abs(z_gt - z_rec);
+                    sumSquareError += errorZ * errorZ;
+                    activePointCount++;
+
+                    // 2. 根据用户切换的颜色模式进行着色
+                    if (state.pcColorMode === 'error') {
+                        // 🔴 误差着色模式：[0mm ~ 150mm] 对应 [绿色 -> 黄色 -> 红色] 渐变
+                        const errInMm = errorZ * 1000; // 转换为毫米
+                        const t = Math.min(1.0, errInMm / 150.0); // 150mm 为最大误差渲染阈值
+
+                        // 线性插值 RGB 颜色
+                        const r = t < 0.5 ? t * 2 : 1.0;
+                        const g = t < 0.5 ? 1.0 : (1.0 - t) * 2;
+                        const b = 0.1;
+                        colorHelper.setRGB(r, g, b);
+                    } else {
+                        // 🟢 经典高度着色模式
+                        const normalizedZ = (z_rec + 0.2) / 1.5;
+                        colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
+                    }
                     colors.push(colorHelper.r, colorHelper.g, colorHelper.b);
                 }
             }
@@ -995,7 +1043,12 @@
             reconstructedPointsMesh = new THREE.Points(pGeom, pMat);
             pcScene.add(reconstructedPointsMesh);
 
-            document.getElementById('lblPointCount').innerText = `Points: ${positions.length / 3}`;
+            // 3. 动态更新 UI 数据
+            document.getElementById('lblPointCount').innerText = `Points: ${activePointCount}`;
+
+            // 计算均方根误差 (RMSE) 并转换为毫米级 (mm) 以符合科学可视化规范
+            const rmse = activePointCount > 0 ? Math.sqrt(sumSquareError / activePointCount) : 0;
+            document.getElementById('lblRMSE').innerText = `RMSE: ${(rmse * 1000).toFixed(2)} mm`;
         }
 
         // ------------------ 9. 四步相移自动化物理采集过程 ------------------
@@ -1130,6 +1183,10 @@
             state.activeObjectType = 'face';
             state.cam.lux = 100;
 
+            state.pcColorMode = 'height';
+            btnColorHeight.className = "bg-indigo-600 text-white px-1.5 py-0.5 rounded transition";
+            btnColorError.className = "text-slate-400 px-1.5 py-0.5 rounded transition";
+
             updateUIElementsFromState();
             selectObject('face');
             controls.reset();
@@ -1169,6 +1226,24 @@
             btnSensorAPS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition";
             lblSensorMode.innerText = "EVS (Event-Based)";
             drawCameraCCDView(state.fringe.phase);
+        });
+
+        // 🌟 新增：高度与重建误差着色模式切换监听
+        const btnColorHeight = document.getElementById('btnColorHeight');
+        const btnColorError = document.getElementById('btnColorError');
+
+        btnColorHeight.addEventListener('click', () => {
+            state.pcColorMode = 'height';
+            btnColorHeight.className = "bg-indigo-600 text-white px-1.5 py-0.5 rounded transition";
+            btnColorError.className = "text-slate-400 px-1.5 py-0.5 rounded transition";
+            rebuild3DPointCloud();
+        });
+
+        btnColorError.addEventListener('click', () => {
+            state.pcColorMode = 'error';
+            btnColorError.className = "bg-indigo-600 text-white px-1.5 py-0.5 rounded transition";
+            btnColorHeight.className = "text-slate-400 px-1.5 py-0.5 rounded transition";
+            rebuild3DPointCloud();
         });
 
         btnShowWrapped.addEventListener('click', () => {
