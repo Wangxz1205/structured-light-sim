@@ -99,17 +99,6 @@
 
             <!-- Tab 1: 物理控制面板 -->
             <div id="physicsPanel" class="flex-1 flex flex-col overflow-y-auto no-scrollbar">
-                <!-- 功能说明 -->
-                <div class="p-4 border-b border-slate-800 bg-slate-900/40">
-                    <h2 class="text-xs font-semibold uppercase tracking-wider text-indigo-400 flex items-center">
-                        <i data-lucide="info" class="w-4 h-4 mr-2"></i>
-                        正弦光栅投影与解相
-                    </h2>
-                    <p class="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
-                        投影仪投射正弦条纹，由于物体表面高度起伏，条纹发生弯曲调制。通过投射4张具有 $\pi/2$ 相位差的图，解调出每个像素的<b>绝对相位值</b>以还原3D高度。
-                    </p>
-                </div>
-
                 <!-- 调节滑块组 -->
                 <div class="p-4 space-y-5">
                     <!-- 1. 被测物体选择 -->
@@ -214,7 +203,7 @@
                     <button id="resetBtn"
                         class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded text-xs font-semibold flex items-center justify-center transition">
                         <i data-lucide="rotate-ccw" class="w-4 h-4 mr-1.5"></i>
-                        复位仿真实验室
+                        复位默认仿真参数
                     </button>
                 </div>
             </div>
