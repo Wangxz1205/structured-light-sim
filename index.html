@@ -73,7 +73,7 @@
                     class="text-lg font-bold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-400 to-cyan-400 bg-clip-text text-transparent flex items-center gap-2">
                     结构光物理仿真与三维点云重建实验室
                 </h1>
-                <p class="text-xs text-slate-400">第二阶段：正弦条纹投影 + 三维人脸面具 + 4步相移重构算法 + ✨ Gemini 2.5 导师</p>
+                <p class="text-xs text-slate-400">第二阶段：正弦条纹投影 + 三维人脸面具 + 4步相移重构算法</p>
             </div>
         </div>
         <div class="flex items-center space-x-4">
@@ -91,27 +91,19 @@
         <!-- 左侧功能面板 (物理调参 / AI 导师双标签页切换) -->
         <section class="w-[420px] bg-slate-900 border-r border-slate-800 flex flex-col overflow-hidden">
 
-            <!-- 导航 Tabs -->
-            <div class="flex border-b border-slate-800 bg-slate-950/80 p-2">
-                <button id="tabPhysics"
-                    class="flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 bg-slate-800 text-slate-100 flex items-center justify-center gap-1.5">
-                    <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
-                    物理与算法控制
-                </button>
-                <button id="tabAI"
-                    class="flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 text-slate-400 hover:text-slate-100 flex items-center justify-center gap-1.5">
-                    <i data-lucide="graduation-cap" class="w-3.5 h-3.5 text-indigo-400"></i>
-                    ✨ AI 学术导师
-                </button>
+            <!-- 侧边栏标题 -->
+            <div class="border-b border-slate-800 bg-slate-950/80 p-3.5 flex items-center justify-center gap-2">
+                <i data-lucide="sliders" class="w-4 h-4 text-indigo-400"></i>
+                <span class="text-xs font-bold text-slate-200 uppercase tracking-wide">物理与算法控制</span>
             </div>
 
             <!-- Tab 1: 物理控制面板 -->
             <div id="physicsPanel" class="flex-1 flex flex-col overflow-y-auto no-scrollbar">
-                <!-- 原理简述 -->
+                <!-- 功能说明 -->
                 <div class="p-4 border-b border-slate-800 bg-slate-900/40">
                     <h2 class="text-xs font-semibold uppercase tracking-wider text-indigo-400 flex items-center">
                         <i data-lucide="info" class="w-4 h-4 mr-2"></i>
-                        正弦光栅投影与解相原理
+                        正弦光栅投影与解相
                     </h2>
                     <p class="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
                         投影仪投射正弦条纹，由于物体表面高度起伏，条纹发生弯曲调制。通过投射4张具有 $\pi/2$ 相位差的图，解调出每个像素的<b>绝对相位值</b>以还原3D高度。
@@ -223,54 +215,6 @@
                         class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded text-xs font-semibold flex items-center justify-center transition">
                         <i data-lucide="rotate-ccw" class="w-4 h-4 mr-1.5"></i>
                         复位仿真实验室
-                    </button>
-                </div>
-            </div>
-
-            <!-- Tab 2: AI 智能学术导师面板 -->
-            <div id="aiPanel" class="flex-1 flex flex-col overflow-y-auto no-scrollbar hidden">
-                <!-- 预设场景 -->
-                <div class="p-4 border-b border-slate-800 bg-slate-905/30">
-                    <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center mb-2.5">
-                        <i data-lucide="workflow" class="w-4 h-4 mr-1.5 text-indigo-400"></i>
-                        一键预设物理应用场景
-                    </h3>
-                    <div class="grid grid-cols-1 gap-2">
-                        <button
-                            class="ai-preset-btn text-left p-2.5 rounded-md bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 hover:border-indigo-500/50 transition text-xs"
-                            data-prompt="微小人脸面部扫描：目标物体为精密面部，需要极高的重建细节。条纹频率需要显著提升以获取高相位灵敏度，基线中等。">
-                            👤 <strong>高精面部扫描重建</strong> (高频条纹)
-                        </button>
-                        <button
-                            class="ai-preset-btn text-left p-2.5 rounded-md bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 hover:border-indigo-500/50 transition text-xs"
-                            data-prompt="宽阔多峰地形测绘：物体起伏剧烈，极容易产生严重相位解混叠（Phase Aliasing）风险。需要降低条纹空间频率，搭配较短的基线以平滑过渡。">
-                            ⛰️ <strong>剧烈起伏多峰重建</strong> (低频防解相混叠)
-                        </button>
-                    </div>
-                </div>
-
-                <!-- 自定义学术任务输入区 -->
-                <div class="p-4 border-b border-slate-800 flex flex-col gap-3">
-                    <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center">
-                        <i data-lucide="message-square" class="w-4 h-4 mr-1.5 text-indigo-400"></i>
-                        自定义实验要求
-                    </h3>
-                    <textarea id="aiCustomInput" placeholder="输入你想完成的结构光条纹重建实验要求。例如：'我想模拟人脸高精度扫描，怎样设置频率和基线能获得最佳精度？' "
-                        class="w-full h-24 bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-300 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
-
-                    <button id="aiConfigureBtn"
-                        class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg transition">
-                        <i data-lucide="sparkles" class="w-4 h-4 text-yellow-300"></i>
-                        ✨ 一键配置光学硬件系统
-                    </button>
-                </div>
-
-                <!-- 当前系统诊断触发 -->
-                <div class="p-4 bg-slate-950/20">
-                    <button id="aiDiagnoseBtn"
-                        class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-indigo-500 text-slate-200 py-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition">
-                        <i data-lucide="activity" class="w-4 h-4 text-emerald-400"></i>
-                        ✨ 诊断条纹自适应解相能力
                     </button>
                 </div>
             </div>
@@ -407,25 +351,6 @@
                     </div>
                 </div>
 
-            </div>
-
-
-            <!-- 学术诊断/AI 提示报告悬浮侧拉式抽屉 -->
-            <div id="aiReportDrawer"
-                class="absolute right-3 top-3 bottom-76 w-80 bg-slate-900/95 border border-slate-800 rounded-xl overflow-hidden shadow-2xl z-20 flex flex-col transform translate-x-[350px] opacity-0 pointer-events-none transition duration-300">
-                <div class="bg-indigo-950 px-4 py-3 border-b border-indigo-800 flex justify-between items-center">
-                    <span class="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
-                        <i data-lucide="award" class="w-4 h-4 text-yellow-400"></i>
-                        ✨ AI 导师学术分析报告
-                    </span>
-                    <button id="btnCloseDrawer" class="text-slate-400 hover:text-slate-200">
-                        <i data-lucide="x" class="w-4 h-4"></i>
-                    </button>
-                </div>
-                <div
-                    class="flex-1 p-4 overflow-y-auto no-scrollbar font-sans text-xs text-slate-300 leading-relaxed select-text">
-                    <div id="aiReportContent" class="markdown-body"></div>
-                </div>
             </div>
 
         </section>
@@ -1107,185 +1032,6 @@
             btnShowUnwrapped.className = "text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition";
             btnShowWrapped.className = "text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition";
             renderPhaseCanvas();
-        });
-
-        // ------------------ 11. ✨ Gemini API 物理及学术导师模块 ------------------
-        const drawer = document.getElementById('aiReportDrawer');
-
-        document.getElementById('btnCloseDrawer').addEventListener('click', () => {
-            drawer.className = "absolute right-3 top-3 bottom-76 w-80 bg-slate-900/95 border border-slate-800 rounded-xl overflow-hidden shadow-2xl z-20 flex flex-col transform translate-x-[350px] opacity-0 pointer-events-none transition duration-300";
-        });
-
-        function openDrawer() {
-            drawer.className = "absolute right-3 top-3 bottom-76 w-80 bg-slate-900/95 border border-slate-800 rounded-xl overflow-hidden shadow-2xl z-20 flex flex-col transform translate-x-0 opacity-100 pointer-events-auto transition duration-300";
-        }
-
-        document.querySelectorAll('.ai-preset-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.getElementById('aiCustomInput').value = btn.getAttribute('data-prompt');
-            });
-        });
-
-        // A. 自动配置硬件系统 (Structured Output 模式)
-        document.getElementById('aiConfigureBtn').addEventListener('click', async () => {
-            const customInput = document.getElementById('aiCustomInput').value.trim();
-            if (!customInput) {
-                showNotification("配置失败", "请输入或选择你想模拟的光学实验需求", "error");
-                return;
-            }
-
-            showAILoading("✨ AI导师正在解算硬件几何配置与最佳条纹频率...");
-
-            const systemPrompt = `你是一个研究主动光栅扫描、三维结构光计算、傅里叶变换解相的高级光学实验室导师。
-你现在需要为学生计算最优的硬件布局和投影正弦条纹空间频率。
-你需要严格遵守以下各参数在 3D 仿真器中支持的物理界限 constraints：
-1. 投影仪 X 轴基线 (projX): 范围 [-5.0, -0.5] (必须为负数)。
-2. 条纹频率 (frequency): 范围 [2.0, 25.0] rad/m。
-3. 摄像机 X 轴基线 (camX): 范围 [0.5, 5.0] (必须为正数)。
-4. 物体 Z 轴距离 (boardZ): 范围 [3.0, 8.0] 米。
-
-请在计算过程中阐明：为什么你建议的条纹频率能在细节敏感度（Sensitivity）与解相多值模糊（Phase Ambiguity）之间获得完美平衡。`;
-
-            const payload = {
-                contents: [{
-                    parts: [{ text: `我目前的实验场景是：\n"${customInput}"\n请计算最优配置组合。` }]
-                }],
-                systemInstruction: {
-                    parts: [{ text: systemPrompt }]
-                },
-                generationConfig: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            projX: { type: "NUMBER", description: "投影仪 X 轴位置" },
-                            frequency: { type: "NUMBER", description: "条纹空间频率" },
-                            camX: { type: "NUMBER", description: "相机 X 轴位置" },
-                            boardZ: { type: "NUMBER", description: "被测物体 Z 轴位置" },
-                            explanation: { type: "STRING", description: "用简洁而优美、高度学术化的中文（可包含 Markdown 和 LaTeX 物理公式）阐明你这套设计的优势以及相高反演三角数学。限制在180字以内。" }
-                        },
-                        required: ["projX", "frequency", "camX", "boardZ", "explanation"]
-                    }
-                }
-            };
-
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
-            try {
-                const responseData = await fetchGeminiWithRetry(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                const rawJsonText = responseData.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (!rawJsonText) throw new Error("AI 接口返回数据为空");
-
-                const config = JSON.parse(rawJsonText);
-
-                state.proj.x = Number(config.projX);
-                state.fringe.frequency = Number(config.frequency);
-                state.cam.x = Number(config.camX);
-                state.board.z = Number(config.boardZ);
-
-                updateUIElementsFromState();
-                targetMesh.position.set(0, 0, state.board.z);
-                updateProjectorMatrix();
-                drawCameraCCDView(state.fringe.phase);
-
-                calculatePhaseAndUnwrap();
-                rebuild3DPointCloud();
-
-                const rContent = document.getElementById('aiReportContent');
-                rContent.innerHTML = marked.parse(`### ✨ 硬件系统调校成功！\n\n**【AI 导师学术说明】**：\n${config.explanation}\n\n` +
-                    `**当前配置方案：**\n` +
-                    `* 物理基线 $B$: \`$${(state.cam.x - state.proj.x).toFixed(2)} m$\` (优化的基深比 $\\frac{B}{Z}$)\n` +
-                    `* 条纹频率 $f$: \`$${state.fringe.frequency.toFixed(2)} rad/m$\``);
-
-                openDrawer();
-                showNotification("AI 配置成功", "已为您自动优化硬件几何光栅布局", "success");
-
-            } catch (err) {
-                console.error(err);
-                showNotification("AI 导师配置超时", "Gemini 物理链路响应失败，请检查网络后再试", "error");
-            } finally {
-                hideAILoading();
-            }
-        });
-
-        // B. 诊断当前系统相移解相质量
-        document.getElementById('aiDiagnoseBtn').addEventListener('click', async () => {
-            showAILoading("🔍 正在评估当前光路条纹自适应相位质量及重构噪点...");
-
-            const currentSetupJson = JSON.stringify({
-                baseline: state.cam.x - state.proj.x,
-                fringeFrequency: state.fringe.frequency,
-                targetObject: state.activeObjectType,
-                boardDepthZ: state.board.z,
-                sensitivityRatio: ((state.cam.x - state.proj.x) / state.board.z).toFixed(3)
-            }, null, 2);
-
-            const systemPrompt = `你是一个结构光光学研究、计算机三维视觉方向的博士生导师。
-你需要根据当前系统的配置数据，给出一份学术化的【解相质量诊断分析】。
-在分析报告中，你应当：
-1. 分析条纹频率对空间解包裹算法的影响。如果频率过高（例如 $f > 15$），指出是否会面临严重的周跳与解相模糊 $2\\pi$ 混叠。
-2. 评估基深比 $\\frac{B}{Z}$ 与深度精度的物理关系。
-3. 运用 LaTeX 公式（如 $\\Delta\\Phi = \\frac{2\\pi f B \\cdot \\Delta z}{Z}$）深入推导当前的系统解算误差边界。
-语言要严谨、富有逻辑性和学术评议深度。`;
-
-            const payload = {
-                contents: [{
-                    parts: [{ text: `这是当前仿真实验室中调试好的相移干涉硬件系统：\n\`\`\`json\n${currentSetupJson}\n\`\`\`\n请提供系统性诊断。` }]
-                }],
-                systemInstruction: {
-                    parts: [{ text: systemPrompt }]
-                }
-            };
-
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
-            try {
-                const responseData = await fetchGeminiWithRetry(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                const rawReport = responseData.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (!rawReport) throw new Error("诊断报告数据损坏");
-
-                const rContent = document.getElementById('aiReportContent');
-                rContent.innerHTML = marked.parse(rawReport);
-                openDrawer();
-
-                showNotification("诊断完成", "相移自适应质量诊断书已生成", "success");
-
-            } catch (err) {
-                console.error(err);
-                showNotification("诊断失败", "AI 诊断模块暂时断线", "error");
-            } finally {
-                hideAILoading();
-            }
-        });
-
-        // ------------------ 12. 切换选项卡 ------------------
-        const tabPhysics = document.getElementById('tabPhysics');
-        const tabAI = document.getElementById('tabAI');
-        const physicsPanel = document.getElementById('physicsPanel');
-        const aiPanel = document.getElementById('aiPanel');
-
-        tabPhysics.addEventListener('click', () => {
-            tabPhysics.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 bg-slate-800 text-slate-100 flex items-center justify-center gap-1.5";
-            tabAI.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 text-slate-400 hover:text-slate-100 flex items-center justify-center gap-1.5";
-            physicsPanel.classList.remove('hidden');
-            aiPanel.classList.add('hidden');
-        });
-
-        tabAI.addEventListener('click', () => {
-            tabAI.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 bg-slate-800 text-slate-100 flex items-center justify-center gap-1.5";
-            tabPhysics.className = "flex-1 py-2 text-xs font-semibold rounded-md transition duration-200 text-slate-400 hover:text-slate-100 flex items-center justify-center gap-1.5";
-            aiPanel.classList.remove('hidden');
-            physicsPanel.classList.add('hidden');
         });
 
         // ------------------ 13. 页面尺寸自适应 ------------------
