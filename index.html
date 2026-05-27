@@ -353,6 +353,21 @@
                     <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden"
                         id="pointCloudContainer">
                         <canvas id="reconstructedCloudCanvas" class="w-full h-full block bg-black"></canvas>
+
+                        <!-- 🌟 新增：动态热力图色标 Colorbar HUD 卡片 (采用绝对定位贴在右下角) -->
+                        <div id="pcColorbarPanel"
+                            class="absolute bottom-2 right-2 bg-slate-950/90 border border-slate-800/80 p-2 rounded-lg flex flex-col space-y-1 shadow-2xl z-10 pointer-events-none w-28">
+                            <div class="text-[8px] font-bold text-slate-300 uppercase tracking-wider text-center"
+                                id="lblColorbarTitle">深度高度色标</div>
+                            <div id="divColorbarGradient" class="h-2 w-full rounded border border-slate-700/50"
+                                style="background: linear-gradient(to right, hsl(198, 95%, 45%), hsl(230, 95%, 50%), hsl(263, 95%, 55%));">
+                            </div>
+                            <div class="flex justify-between text-[7px] font-mono text-slate-400">
+                                <span id="lblColorbarMin">-0.2 m</span>
+                                <span id="lblColorbarMax">1.3 m</span>
+                            </div>
+                        </div>
+
                         <!-- 点云操作小浮窗 -->
                         <div
                             class="absolute bottom-2 left-2 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-[9px] text-slate-400 pointer-events-none">
@@ -956,6 +971,30 @@
 
         let reconstructedPointsMesh = null;
 
+        // 🌟 新增：根据当前状态，动态更新色标面板的渐变色和文字刻度
+        function updateColorbarUI() {
+            const titleEl = document.getElementById('lblColorbarTitle');
+            const gradientEl = document.getElementById('divColorbarGradient');
+            const minEl = document.getElementById('lblColorbarMin');
+            const maxEl = document.getElementById('lblColorbarMax');
+
+            if (!titleEl || !gradientEl || !minEl || !maxEl) return;
+
+            if (state.pcColorMode === 'error') {
+                titleEl.innerText = "重建误差色标";
+                // 对应 [0mm ~ 150mm] -> 绿色 -> 黄色 -> 红色的渐变色带
+                gradientEl.style.background = "linear-gradient(to right, #00ff1a, #ffff1a, #ff001a)";
+                minEl.innerText = "0 mm";
+                maxEl.innerText = "150 mm";
+            } else {
+                titleEl.innerText = "深度高度色标";
+                // 对应三维高度 HSL 重建光谱
+                gradientEl.style.background = "linear-gradient(to right, hsl(198, 95%, 45%), hsl(230, 95%, 50%), hsl(263, 95%, 55%))";
+                minEl.innerText = "-0.2 m";
+                maxEl.innerText = "1.3 m";
+            }
+        }
+
         function rebuild3DPointCloud() {
             if (reconstructedPointsMesh) {
                 pcScene.remove(reconstructedPointsMesh);
@@ -1049,6 +1088,9 @@
             // 计算均方根误差 (RMSE) 并转换为毫米级 (mm) 以符合科学可视化规范
             const rmse = activePointCount > 0 ? Math.sqrt(sumSquareError / activePointCount) : 0;
             document.getElementById('lblRMSE').innerText = `RMSE: ${(rmse * 1000).toFixed(2)} mm`;
+
+            // 🌟 每次重新生成点云时，同步更新一次 Colorbar
+            updateColorbarUI();
         }
 
         // ------------------ 9. 四步相移自动化物理采集过程 ------------------
