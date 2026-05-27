@@ -450,33 +450,54 @@
         mainScene.add(gridHelper);
 
         // 物理硬件设备模型 (投影仪，摄像机)
-        function createHardwareModel(color) {
+        function createHardwareModel(color, type) {
             const group = new THREE.Group();
 
-            // 主体机身：改用 MeshBasicMaterial（基础自发光材质）
-            // 这样不需要任何灯光，它就能在黑暗中 100% 还原您设定的蓝色或红色！
-            const bodyGeo = new THREE.BoxGeometry(0.5, 0.3, 0.6);
-            const bodyMat = new THREE.MeshBasicMaterial({
-                color: color
-            });
-            const body = new THREE.Mesh(bodyGeo, bodyMat);
-            group.add(body);
+            if (type === 'projector') {
+                // 🌟 DLP 投影仪：扁平长方体机身
+                const bodyGeo = new THREE.BoxGeometry(0.6, 0.25, 0.5);
+                const bodyMat = new THREE.MeshBasicMaterial({
+                    color: color
+                });
+                const body = new THREE.Mesh(bodyGeo, bodyMat);
+                group.add(body);
 
-            // 镜头：同样改用基础自发光材质，设为醒目的灰色
-            const lensGeo = new THREE.CylinderGeometry(0.12, 0.15, 0.25, 16);
-            lensGeo.rotateX(Math.PI / 2);
-            const lensMat = new THREE.MeshBasicMaterial({
-                color: 0xcccccc
-            });
-            const lens = new THREE.Mesh(lensGeo, lensMat);
-            lens.position.set(0, 0, 0.35);
-            group.add(lens);
+                // 🌟 投影仪镜头：长方体镜头 (Rectangular Lens)
+                const lensGeo = new THREE.BoxGeometry(0.24, 0.16, 0.2); // 长方体尺寸
+                const lensMat = new THREE.MeshBasicMaterial({
+                    color: 0xdddddd // 稍微明亮一点的灰度
+                });
+                const lens = new THREE.Mesh(lensGeo, lensMat);
+                // 将镜头移到机身前方 (Z 轴正方向)
+                lens.position.set(0, 0, 0.3);
+                group.add(lens);
+
+            } else {
+                // 🌟 CMOS 工业相机：紧凑正方体机身
+                const bodyGeo = new THREE.BoxGeometry(0.38, 0.38, 0.4);
+                const bodyMat = new THREE.MeshBasicMaterial({
+                    color: color
+                });
+                const body = new THREE.Mesh(bodyGeo, bodyMat);
+                group.add(body);
+
+                // 🌟 相机镜头：传统圆柱体镜头 (Cylindrical Lens)
+                const lensGeo = new THREE.CylinderGeometry(0.1, 0.12, 0.22, 16);
+                lensGeo.rotateX(Math.PI / 2); // 旋转使其朝向前方
+                const lensMat = new THREE.MeshBasicMaterial({
+                    color: 0xaaaaaa
+                });
+                const lens = new THREE.Mesh(lensGeo, lensMat);
+                // 镜头移到机身前方
+                lens.position.set(0, 0, 0.3);
+                group.add(lens);
+            }
 
             return group;
         }
 
-        const projModel = createHardwareModel(0x3b82f6); // 投影仪
-        const camModel = createHardwareModel(0xf43f5e);  // 摄像机
+        const projModel = createHardwareModel(0x3b82f6, 'projector'); // 投影仪
+        const camModel = createHardwareModel(0xf43f5e, 'camera');     // 摄像机
         mainScene.add(projModel);
         mainScene.add(camModel);
 
