@@ -183,8 +183,55 @@
                         </div>
                     </div>
 
+                    <!-- 🌟 新增：4. 发射端光学器件仿真 (Optics) -->
+                    <div class="space-y-3">
+                        <h3
+                            class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center border-b border-slate-800/60 pb-1.5">
+                            <i data-lucide="layers" class="w-4 h-4 mr-2 text-indigo-400"></i>
+                            4. 发射端光学器件仿真 (Optics)
+                        </h3>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">投影物理模式 (Modulation)</span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <button id="btnProjFringe"
+                                    class="py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition">
+                                    DLP 有源条纹
+                                </button>
+                                <button id="btnProjDOE"
+                                    class="py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition">
+                                    VCSEL + DOE 散斑
+                                </button>
+                            </div>
+                        </div>
+                        <div class="space-y-2 pt-1">
+                            <span class="text-xs text-slate-400 block">透镜非理想效应 (Lens Aberrations)</span>
+                            <div class="flex items-center justify-between">
+                                <span class="text-[11px] text-slate-400 flex items-center">
+                                    <i data-lucide="focus" class="w-3.5 h-3.5 mr-1 text-indigo-400"></i>
+                                    透镜景深离焦衰减 (Defocus)
+                                </span>
+                                <button id="btnToggleDefocus"
+                                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition">
+                                    已禁用
+                                </button>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <span class="text-[11px] text-slate-400 flex items-center">
+                                    <i data-lucide="eye" class="w-3.5 h-3.5 mr-1 text-rose-400"></i>
+                                    镜头径向畸变 (Distortion)
+                                </span>
+                                <button id="btnToggleDistortion"
+                                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition">
+                                    已禁用
+                                </button>
+                            </div>
+                        </div>
+                    </div>
 
-                    <!-- 4. 重建系统核心触发 -->
+
+                    <!-- 5. 重建系统核心触发 -->
                     <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2">
                         <h4 class="text-xs font-bold text-slate-200 flex items-center">
                             <i data-lucide="play" class="w-3.5 h-3.5 mr-1 text-emerald-400"></i>
@@ -277,9 +324,8 @@
                     </div>
                     <!-- 🌟 关键修改：添加 min-h-0，解决 Flex 默认最小尺寸计算导致的 Canvas 纵向溢出遮挡 Bug -->
                     <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden p-2">
-                        <!-- style 去除 w-full，使用 max-width/max-height 以 1:1 纵横比自适应缩放，预留 95% 安全区域绝不遮挡 -->
                         <canvas id="cameraSensorCanvas" class="block bg-black rounded"
-                            style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
+                            style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 4 / 3; object-fit: contain;"></canvas>
                     </div>
                 </div>
 
@@ -308,7 +354,7 @@
                     <div class="flex-1 min-h-0 bg-black flex items-center justify-center p-2 overflow-hidden">
                         <div class="w-full h-full relative flex items-center justify-center">
                             <canvas id="phaseAnalysisCanvas" class="block bg-black rounded"
-                                style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 1 / 1; object-fit: contain;"></canvas>
+                                style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 4 / 3; object-fit: contain;"></canvas>
                             <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono"
                                 id="lblPhaseState">
                                 包裹相位范围: [-π, π]
@@ -447,7 +493,10 @@
                 y: 0,
                 z: 0,
                 yaw: 15, // 倾斜角度
-                angle: 45 // DLP投影半视场角
+                angle: 45, // DLP投影半视场角
+                projectionMode: 'fringe', // 🌟 新增：'fringe' 有源条纹 | 'doe' 静态激光散斑
+                lensDefocus: false,       // 🌟 新增：是否开启投影透镜景深离焦衰减
+                lensDistortion: false     // 🌟 新增：是否开启物理镜头径向畸变
             },
             fringe: {
                 frequency: 8.0, // 条纹空间频率
@@ -609,8 +658,13 @@
                 fringeFrequency: { value: state.fringe.frequency },
                 phaseShift: { value: state.fringe.phase },
                 projCenterZ: { value: state.board.z },
-                activeColor: { value: new THREE.Color(0xd1d5db) }
+                activeColor: { value: new THREE.Color(0xd1d5db) },
+                // 🌟 新增光学参数 Uniforms
+                projectionMode: { value: state.proj.projectionMode === 'doe' ? 1 : 0 },
+                lensDefocus: { value: state.proj.lensDefocus ? 1 : 0 },
+                lensDistortion: { value: state.proj.lensDistortion ? 1 : 0 }
             };
+
 
             targetShaderMaterial = new THREE.ShaderMaterial({
                 uniforms: uniforms,
@@ -634,6 +688,17 @@
                     uniform float phaseShift;
                     uniform float projCenterZ;
                     uniform vec3 activeColor;
+                    
+                    // 🌟 新增光学 Uniforms
+                    uniform int projectionMode;
+                    uniform int lensDefocus;
+                    uniform int lensDistortion;
+
+                    // 空间伪随机哈希函数（现场演算DOE无规则干涉散斑）
+                    float hash(vec2 p) {
+                        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+                    }
+
                     void main() {
                         vec3 projCoords = vProjectorUV.xyz / vProjectorUV.w;
                         vec2 uvProj = projCoords.xy * 0.5 + 0.5;
@@ -642,8 +707,36 @@
                         float diff = max(dot(vNormal, lightDir), 0.15);
                         
                         if (uvProj.x >= 0.0 && uvProj.x <= 1.0 && uvProj.y >= 0.0 && uvProj.y <= 1.0 && vProjectorUV.w > 0.0) {
-                            float projX = projCoords.x * 6.2831853; 
-                            float intensity = 0.5 + 0.5 * cos(projX * fringeFrequency + phaseShift);
+                            
+                            // 🌟 1. 模拟投影镜头径向畸变
+                            vec2 coords = projCoords.xy;
+                            if (lensDistortion == 1) {
+                                float r2 = dot(coords, coords);
+                                coords = coords * (1.0 + 0.12 * r2);
+                            }
+
+                            float projX = coords.x * 6.2831853; 
+                            float intensity = 0.5;
+
+                            // 🌟 2. 区分条纹与散斑
+                            if (projectionMode == 1) {
+                                // VCSEL + DOE 静态散斑衍射点阵
+                                vec2 grid = floor(coords * fringeFrequency * 8.0);
+                                float rVal = hash(grid);
+                                intensity = rVal > 0.85 ? 1.0 : 0.0;
+                            } else {
+                                // DLP 理想正弦条纹
+                                float fringeVal = cos(projX * fringeFrequency + phaseShift);
+                                
+                                // 🌟 3. 模拟透镜离焦景深对比度衰减 (低通滤波效应)
+                                if (lensDefocus == 1) {
+                                    float localZ = vWorldPosition.z - projCenterZ; // 高度偏离焦深
+                                    float defocusContrast = exp(-pow(localZ - 0.3, 2.0) / 0.15);
+                                    fringeVal = fringeVal * defocusContrast;
+                                }
+                                intensity = 0.5 + 0.5 * fringeVal;
+                            }
+
                             vec3 stripeColor = vec3(intensity);
                             gl_FragColor = vec4(stripeColor * diff, 1.0);
                         } else {
@@ -651,6 +744,7 @@
                         }
                     }
                 `,
+
                 side: THREE.DoubleSide
             });
         }
@@ -690,6 +784,11 @@
                 targetShaderMaterial.uniforms.fringeFrequency.value = state.fringe.frequency;
                 targetShaderMaterial.uniforms.phaseShift.value = state.fringe.phase;
                 targetShaderMaterial.uniforms.projCenterZ.value = state.board.z;
+
+                // 🌟 新增：更新投影镜头畸变、离焦与 DOE 模式 Uniforms
+                targetShaderMaterial.uniforms.projectionMode.value = state.proj.projectionMode === 'doe' ? 1 : 0;
+                targetShaderMaterial.uniforms.lensDefocus.value = state.proj.lensDefocus ? 1 : 0;
+                targetShaderMaterial.uniforms.lensDistortion.value = state.proj.lensDistortion ? 1 : 0;
             }
 
             projModel.position.set(state.proj.x, state.proj.y, state.proj.z);
@@ -706,6 +805,10 @@
         sensorCanvas.height = 256;
 
         function drawCameraCCDView(currentPhase) {
+            // 🌟 锁定 003CA 相机真实的 320x240 长方形分辨率
+            sensorCanvas.width = 320;
+            sensorCanvas.height = 240;
+
             const w = sensorCanvas.width;
             const h = sensorCanvas.height;
             sCtx.fillStyle = '#05070f';
@@ -716,6 +819,7 @@
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
+            const aspect = w / h; // 🌟 引入长宽比 (320 / 240 = 1.333)
 
             // 🌟 线性插值与拟合客观测试 CSV 表中不同 Lux 对应的物理参数：
             const lux = state.cam.lux;
@@ -726,14 +830,14 @@
             let evsThreshold = 0.08;    // EVS 对数对比度触发阈值
 
             if (lux <= 3) {
-                // 1~3 Lux 极暗：对应极高的 EVS 触发阈值（192% ~ 92%）与弱光 FPN
+                // 1~3 Lux 极暗：对应极高的 EVS 触发阈值与弱光 FPN
                 noiseRatio = 0.014 + (lux - 1) * 0.001;
                 rowNoiseScale = 0.166 + (lux - 1) * 0.002;
                 colNoiseScale = 0.217 + (lux - 1) * 0.01;
                 uniformityScale = 0.029;
                 evsThreshold = 1.92 - (lux - 1) * 1.0;
             } else if (lux <= 20) {
-                // 5~20 Lux 中低照度：对应 Row ~ 0.24, Col ~ 0.26, Uniformity ~ 5% 的真实数据
+                // 5~20 Lux 中低照度：对应 Row ~ 0.24, Col ~ 0.26, Uniformity ~ 5%
                 noiseRatio = 0.068 + (lux - 5) * 0.0007;
                 rowNoiseScale = 0.204 + (lux - 5) * 0.0019;
                 colNoiseScale = 0.215 + (lux - 5) * 0.0036;
@@ -755,45 +859,79 @@
                 const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u++) {
                     const nx = (u / w) * 2 - 1;
-                    const x_board = nx * 1.6;
+                    // 🌟 引入 aspect 因子，对横向坐标进行拉宽，以实现各向同性，彻底根治拉伸变形
+                    const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
+                    // 🌟 1. 模拟镜头径向桶形畸变 (Distortion Model)
+                    let calcX = x_board;
+                    let calcY = y_board;
+                    if (state.proj.lensDistortion) {
+                        const r2 = x_board * x_board + y_board * y_board;
+                        const k1 = 0.12; // 径向畸变系数
+                        calcX = x_board * (1.0 + k1 * r2);
+                        calcY = y_board * (1.0 + k1 * r2);
+                    }
+
+                    // 计算目标物体真实 3D 高度起伏
                     let z_height = 0;
                     if (state.activeObjectType === 'sphere') {
                         const r = 1.2;
-                        const dSq = x_board * x_board + y_board * y_board;
+                        const dSq = calcX * calcX + calcY * calcY;
                         if (dSq < r * r) z_height = Math.sqrt(r * r - dSq);
                     } else if (state.activeObjectType === 'face') {
-                        const baseDome = 0.4 * Math.exp(-(x_board * x_board + y_board * y_board) / 2.0);
-                        const nose = 0.8 * Math.exp(-((x_board * x_board) / 0.06 + ((y_board - 0.25) * (y_board - 0.25)) / 0.22));
-                        const leftCheek = 0.32 * Math.exp(-(((x_board + 0.5) * (x_board + 0.5)) / 0.14 + ((y_board + 0.1) * (y_board + 0.1)) / 0.18));
-                        const rightCheek = 0.32 * Math.exp(-(((x_board - 0.5) * (x_board - 0.5)) / 0.14 + ((y_board + 0.1) * (y_board + 0.1)) / 0.18));
-                        const chin = 0.25 * Math.exp(-((x_board * x_board) / 0.12 + ((y_board + 0.85) * (y_board + 0.85)) / 0.12));
-                        const forehead = 0.15 * Math.exp(-((x_board * x_board) / 0.6 + ((y_board - 0.8) * (y_board - 0.8)) / 0.3));
-                        const leftEye = -0.12 * Math.exp(-(((x_board + 0.38) * (x_board + 0.38)) / 0.08 + ((y_board - 0.45) * (y_board - 0.45)) / 0.08));
-                        const rightEye = -0.12 * Math.exp(-(((x_board - 0.38) * (x_board - 0.38)) / 0.08 + ((y_board - 0.45) * (y_board - 0.45)) / 0.08));
+                        const baseDome = 0.4 * Math.exp(-(calcX * calcX + calcY * calcY) / 2.0);
+                        const nose = 0.8 * Math.exp(-((calcX * calcX) / 0.06 + ((calcY - 0.25) * (calcY - 0.25)) / 0.22));
+                        const leftCheek = 0.32 * Math.exp(-(((calcX + 0.5) * (calcX + 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
+                        const rightCheek = 0.32 * Math.exp(-(((calcX - 0.5) * (calcX - 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
+                        const chin = 0.25 * Math.exp(-((calcX * calcX) / 0.12 + ((calcY + 0.85) * (calcY + 0.85)) / 0.12));
+                        const forehead = 0.15 * Math.exp(-((calcX * calcX) / 0.6 + ((calcY - 0.8) * (calcY - 0.8)) / 0.3));
+                        const leftEye = -0.12 * Math.exp(-(((calcX + 0.38) * (calcX + 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
+                        const rightEye = -0.12 * Math.exp(-(((calcX - 0.38) * (calcX - 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
                         z_height = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEye + rightEye;
                     } else if (state.activeObjectType === 'peaks') {
-                        z_height = 0.35 * Math.sin(x_board * 3.2) * Math.cos(y_board * 3.2) + 0.18 * Math.cos(x_board * 6.5) + 0.15 * Math.sin(y_board * 5.0);
+                        z_height = 0.35 * Math.sin(calcX * 3.2) * Math.cos(calcY * 3.2) + 0.18 * Math.cos(calcX * 6.5) + 0.15 * Math.sin(calcY * 5.0);
                     }
 
-                    const projShiftX = x_board - (z_height * (baseline / distZ)) * 0.75;
-                    const fringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + currentPhase);
-                    const fringeValPrev = Math.cos(projShiftX * state.fringe.frequency * 3.0 + prevPhase);
+                    // 2. 光栅光线直线投影位移
+                    const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
+
+                    // 🌟 3. 区分条纹模式与 VCSEL + DOE 静态散斑衍射点阵
+                    let fringeVal;
+                    let fringeValPrev;
+
+                    if (state.proj.projectionMode === 'doe') {
+                        // 静态衍射斑：采用空间随机哈希，不受相偏影响
+                        const scale = 25.0;
+                        const gridX = Math.floor(projShiftX * scale);
+                        const gridY = Math.floor(calcY * scale);
+                        const rVal = Math.abs(Math.sin(gridX * 12.9898 + gridY * 78.233) * 43758.5453) % 1;
+                        fringeVal = rVal > 0.85 ? 1.0 : -1.0;
+                        fringeValPrev = fringeVal;
+                    } else {
+                        // DLP 正弦条纹
+                        fringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + currentPhase);
+                        fringeValPrev = Math.cos(projShiftX * state.fringe.frequency * 3.0 + prevPhase);
+                    }
 
                     let intensity = 0.5 + 0.5 * fringeVal;
                     let intensityPrev = 0.5 + 0.5 * fringeValPrev;
 
-                    const boundaryLimit = 1.35;
-                    if (x_board * x_board + y_board * y_board > boundaryLimit * boundaryLimit && state.activeObjectType !== 'peaks') {
-                        intensity = 0.05;
-                        intensityPrev = 0.05;
+                    // 🌟 4. 模拟投影透镜景深离焦对比度衰减 (低通滤波，仅条纹模式可见)
+                    if (state.proj.lensDefocus && state.proj.projectionMode === 'fringe') {
+                        const focusZ = 0.3; // 焦平面在面具前表面 (高度约0.3)
+                        const w_defocus = 0.15; // 焦深跨度
+                        const defocusContrast = Math.exp(-Math.pow(z_height - focusZ, 2) / w_defocus);
+                        intensity = 0.5 + 0.5 * fringeVal * defocusContrast;
+                        intensityPrev = 0.5 + 0.5 * fringeValPrev * defocusContrast;
                     }
+
+                    // ❌ 彻底移除：原本在此处的 boundaryLimit 限制条件，让像素能够完整渲染到 320x240 长方形边缘！
 
                     const idx = (v * w + u) * 4;
 
                     if (state.cam.sensorMode === 'evs') {
-                        // 🌟 EVS 神经形态事件计算模型：对数差分 (Temporal logarithmic difference)
+                        // EVS 神经形态事件计算模型：对数差分 (Temporal logarithmic difference)
                         const dL = Math.log(intensity + 0.01) - Math.log(intensityPrev + 0.01);
 
                         if (dL > evsThreshold) {
@@ -803,7 +941,7 @@
                             // Down Event（极性负，亮蓝色点）
                             data[idx] = 40; data[idx + 1] = 120; data[idx + 2] = 245;
                         } else {
-                            // 模拟 EVS 背景漏电 BA 噪点 (在 Lux 极低时激发率呈指数级上升)
+                            // 模拟 EVS 背景漏电 BA 噪点
                             if (Math.random() < noiseRatio * 0.015) {
                                 if (Math.random() > 0.5) {
                                     data[idx] = 180; data[idx + 1] = 40; data[idx + 2] = 40; // 假正
@@ -817,7 +955,7 @@
                         data[idx + 3] = 255;
 
                     } else {
-                        // 🌟 APS 主动像素传感器模型：
+                        // APS 主动像素传感器模型：
                         let rawIntensity = intensity;
 
                         // a. FPN空间非均匀增益调制
@@ -845,6 +983,7 @@
         }
 
 
+
         // ------------------ 7. 相移计算与绝对相位提取 (Wrapped & Unwrapped Canvas) ------------------
         const phaseCanvas = document.getElementById('phaseAnalysisCanvas');
         const pCtx = phaseCanvas.getContext('2d');
@@ -855,6 +994,10 @@
         let lastComputedUnwrappedPhase = null;
 
         function calculatePhaseAndUnwrap() {
+            // 🌟 同步重塑为 320x240 长方形分辨率解算
+            phaseCanvas.width = 320;
+            phaseCanvas.height = 240;
+
             const w = phaseCanvas.width;
             const h = phaseCanvas.height;
             const totalPixels = w * h;
@@ -864,45 +1007,54 @@
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
+            const aspect = w / h; // 🌟 引入宽高比
 
             for (let v = 0; v < h; v++) {
                 const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u++) {
                     const nx = (u / w) * 2 - 1;
-                    const x_board = nx * 1.6;
+                    const x_board = nx * 1.6 * aspect; // 🌟 各向同性拉宽横向，根治拉伸形变
                     const y_board = -ny * 1.6;
+
+                    // 🌟 模拟镜头径向畸变
+                    let calcX = x_board;
+                    let calcY = y_board;
+                    if (state.proj.lensDistortion) {
+                        const r2 = x_board * x_board + y_board * y_board;
+                        const k1 = 0.12;
+                        calcX = x_board * (1.0 + k1 * r2);
+                        calcY = y_board * (1.0 + k1 * r2);
+                    }
 
                     let z_height = 0;
                     if (state.activeObjectType === 'sphere') {
                         const r = 1.2;
-                        const dSq = x_board * x_board + y_board * y_board;
+                        const dSq = calcX * calcX + calcY * calcY;
                         if (dSq < r * r) z_height = Math.sqrt(r * r - dSq);
                     } else if (state.activeObjectType === 'face') {
-                        const baseDome = 0.4 * Math.exp(-(x_board * x_board + y_board * y_board) / 2.0);
-                        const nose = 0.8 * Math.exp(-((x_board * x_board) / 0.06 + ((y_board - 0.25) * (y_board - 0.25)) / 0.22));
-                        const cheekL = 0.32 * Math.exp(-(((x_board + 0.5) * (x_board + 0.5)) / 0.14 + ((y_board + 0.1) * (y_board + 0.1)) / 0.18));
-                        const cheekR = 0.32 * Math.exp(-(((x_board - 0.5) * (x_board - 0.5)) / 0.14 + ((y_board + 0.1) * (y_board + 0.1)) / 0.18));
-                        const chin = 0.25 * Math.exp(-((x_board * x_board) / 0.12 + ((y_board + 0.85) * (y_board + 0.85)) / 0.12));
-                        const forehead = 0.15 * Math.exp(-((x_board * x_board) / 0.6 + ((y_board - 0.8) * (y_board - 0.8)) / 0.3));
-                        const leftEye = -0.12 * Math.exp(-(((x_board + 0.38) * (x_board + 0.38)) / 0.08 + ((y_board - 0.45) * (y_board - 0.45)) / 0.08));
-                        const rightEye = -0.12 * Math.exp(-(((x_board - 0.38) * (x_board - 0.38)) / 0.08 + ((y_board - 0.45) * (y_board - 0.45)) / 0.08));
+                        const baseDome = 0.4 * Math.exp(-(calcX * calcX + calcY * calcY) / 2.0);
+                        const nose = 0.8 * Math.exp(-((calcX * calcX) / 0.06 + ((calcY - 0.25) * (calcY - 0.25)) / 0.22));
+                        const cheekL = 0.32 * Math.exp(-(((calcX + 0.5) * (calcX + 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
+                        const cheekR = 0.32 * Math.exp(-(((calcX - 0.5) * (calcX - 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
+                        const chin = 0.25 * Math.exp(-((calcX * calcX) / 0.12 + ((calcY + 0.85) * (calcY + 0.85)) / 0.12));
+                        const forehead = 0.15 * Math.exp(-((calcX * calcX) / 0.6 + ((calcY - 0.8) * (calcY - 0.8)) / 0.3));
+                        const leftEye = -0.12 * Math.exp(-(((calcX + 0.38) * (calcX + 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
+                        const rightEye = -0.12 * Math.exp(-(((calcX - 0.38) * (calcX - 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
                         z_height = baseDome + nose + cheekL + cheekR + chin + forehead + leftEye + rightEye;
                     } else if (state.activeObjectType === 'peaks') {
-                        z_height = 0.35 * Math.sin(x_board * 3.2) * Math.cos(y_board * 3.2) + 0.18 * Math.cos(x_board * 6.5) + 0.15 * Math.sin(y_board * 5.0);
+                        z_height = 0.35 * Math.sin(calcX * 3.2) * Math.cos(calcY * 3.2) + 0.18 * Math.cos(calcX * 6.5) + 0.15 * Math.sin(calcY * 5.0);
                     }
 
-                    const projShiftX = x_board - (z_height * (baseline / distZ)) * 0.75;
+                    const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
                     const truePhase = projShiftX * state.fringe.frequency * 3.0;
 
                     let wrappedPhase = Math.atan2(Math.sin(truePhase), Math.cos(truePhase));
 
-                    if (x_board * x_board + y_board * y_board > 1.35 * 1.35 && state.activeObjectType !== 'peaks') {
-                        wrappedPhase = -999.0;
-                    }
+                    // ❌ 彻底移除：原本在此处将外部像素强行判定为 -999.0 的逻辑，释放全区域解相数据
 
                     const idx = v * w + u;
                     wrapped[idx] = wrappedPhase;
-                    unwrapped[idx] = wrappedPhase === -999.0 ? -999.0 : truePhase;
+                    unwrapped[idx] = truePhase;
                 }
             }
 
@@ -1008,6 +1160,7 @@
             const colorHelper = new THREE.Color();
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
+            const aspect = w / h; // 🌟 引入宽高比
 
             // 1. 初始化误差累计变量
             let sumSquareError = 0;
@@ -1026,40 +1179,51 @@
                     const idx = v * w + u;
                     const absPhase = lastComputedUnwrappedPhase[idx];
 
-                    if (absPhase === -999.0) continue;
+                    // ❌ 彻底移除：原本直接跳过 -999.0 外部点的逻辑（因相移解调已被全幅充实，这里全面保留数据点）
+                    if (absPhase === -999.0) continue; // 仅保留作为极限空指针兜底安全机制
 
-                    const x_board = (u / w) * 3.5 - 1.75;
-                    const y_board = -(v / h) * 3.5 + 1.75;
+                    const nx = (u / w) * 2 - 1;
+                    // 🌟 3D重组网格同步通过 aspect 各向同性横向拉宽，确保 3D 重建面不发生椭圆拉伸
+                    const x_board = nx * 1.6 * aspect;
+                    const y_board = -ny * 1.6;
+
+                    // 🌟 考虑径向畸变对反演几何网格的影响，完美确保系统闭环
+                    let calcX = x_board;
+                    let calcY = y_board;
+                    if (state.proj.lensDistortion) {
+                        const r2 = x_board * x_board + y_board * y_board;
+                        const k1 = 0.12;
+                        calcX = x_board * (1.0 + k1 * r2);
+                        calcY = y_board * (1.0 + k1 * r2);
+                    }
 
                     // 真实高度 (Ground Truth)
                     const projShiftX_ideal = absPhase / (state.fringe.frequency * 3.0);
-                    const z_gt = (x_board - projShiftX_ideal) / (0.75 * (baseline / distZ));
+                    const z_gt = (calcX - projShiftX_ideal) / (0.75 * (baseline / distZ));
 
                     // 🌟 探测到的高度 (Reconstructed with Noise)
-                    // 模拟在光电接收、行列噪点以及量化下，最终解算出的带噪深度结果
                     const reconstructionNoise = (Math.random() * 2 - 1) * noiseAmplitude * 1.5;
                     const z_rec = z_gt + reconstructionNoise;
 
-                    positions.push(x_board, y_board, z_rec);
+                    positions.push(calcX, calcY, z_rec);
 
-                    // 🌟 核心：计算 Z 轴深度重建误差
+                    // 🌟 计算绝对深度重建误差
                     const errorZ = Math.abs(z_gt - z_rec);
                     sumSquareError += errorZ * errorZ;
                     activePointCount++;
 
-                    // 2. 根据用户切换的颜色模式进行着色
+                    // 根据用户切换的颜色模式进行着色
                     if (state.pcColorMode === 'error') {
                         // 🔴 误差着色模式：[0mm ~ 150mm] 对应 [绿色 -> 黄色 -> 红色] 渐变
-                        const errInMm = errorZ * 1000; // 转换为毫米
-                        const t = Math.min(1.0, errInMm / 150.0); // 150mm 为最大误差渲染阈值
+                        const errInMm = errorZ * 1000;
+                        const t = Math.min(1.0, errInMm / 150.0); // 150mm 为最大误差
 
-                        // 线性插值 RGB 颜色
                         const r = t < 0.5 ? t * 2 : 1.0;
                         const g = t < 0.5 ? 1.0 : (1.0 - t) * 2;
                         const b = 0.1;
                         colorHelper.setRGB(r, g, b);
                     } else {
-                        // 🟢 经典高度着色模式
+                        // Height 经典高度着色
                         const normalizedZ = (z_rec + 0.2) / 1.5;
                         colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
                     }
@@ -1082,21 +1246,37 @@
             reconstructedPointsMesh = new THREE.Points(pGeom, pMat);
             pcScene.add(reconstructedPointsMesh);
 
-            // 3. 动态更新 UI 数据
             document.getElementById('lblPointCount').innerText = `Points: ${activePointCount}`;
 
-            // 计算均方根误差 (RMSE) 并转换为毫米级 (mm) 以符合科学可视化规范
+            // 计算均方根误差 (RMSE) 并转换为毫米级 (mm)
             const rmse = activePointCount > 0 ? Math.sqrt(sumSquareError / activePointCount) : 0;
             document.getElementById('lblRMSE').innerText = `RMSE: ${(rmse * 1000).toFixed(2)} mm`;
 
-            // 🌟 每次重新生成点云时，同步更新一次 Colorbar
+            // 每次重新生成点云时，同步更新一次 Colorbar
             updateColorbarUI();
         }
+
+
 
         // ------------------ 9. 四步相移自动化物理采集过程 ------------------
         let isAcquiring = false;
 
         async function triggerFourStepPhaseAcquisition() {
+            // 🌟 新增：处理静态无源 DOE 模式冲突（自适应后台有源切换）
+            let originalMode = state.proj.projectionMode;
+            if (originalMode === 'doe') {
+                showNotification("模式兼容提示", "静态DOE散斑不具备相移解算能力。系统已自动在后台切入有源DLP光栅以执行高保真解调！", "success");
+                state.proj.projectionMode = 'fringe';
+
+                // 强制同步按钮外观
+                document.getElementById('btnProjFringe').className = "py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition";
+                document.getElementById('btnProjDOE').className = "py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition";
+
+                updateProjectorMatrix();
+                drawCameraCCDView(state.fringe.phase);
+            }
+
+
             if (isAcquiring) return;
             isAcquiring = true;
 
@@ -1125,6 +1305,15 @@
             runBtn.classList.remove('opacity-50');
             runBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-emerald-400"></i> 点云重建已就绪`;
             lucide.createIcons();
+
+            // 🌟 新增：计算完毕后，自适应恢复至初始 DOE 静态状态
+            if (originalMode === 'doe') {
+                state.proj.projectionMode = 'doe';
+                document.getElementById('btnProjDOE').className = "py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition";
+                document.getElementById('btnProjFringe').className = "py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition";
+                updateProjectorMatrix();
+                drawCameraCCDView(state.fringe.phase);
+            }
 
             isAcquiring = false;
             showNotification("重建成功", "四步相移相位解调完毕，3D 点云已成功生成并在右下角视口渲染！", "success");
@@ -1286,6 +1475,54 @@
             btnColorError.className = "bg-indigo-600 text-white px-1.5 py-0.5 rounded transition";
             btnColorHeight.className = "text-slate-400 px-1.5 py-0.5 rounded transition";
             rebuild3DPointCloud();
+        });
+
+        // 🌟 新增：发射端光学器件点击事件绑定
+        const btnProjFringe = document.getElementById('btnProjFringe');
+        const btnProjDOE = document.getElementById('btnProjDOE');
+        const btnToggleDefocus = document.getElementById('btnToggleDefocus');
+        const btnToggleDistortion = document.getElementById('btnToggleDistortion');
+
+        btnProjFringe.addEventListener('click', () => {
+            state.proj.projectionMode = 'fringe';
+            btnProjFringe.className = "py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition";
+            btnProjDOE.className = "py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition";
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        btnProjDOE.addEventListener('click', () => {
+            state.proj.projectionMode = 'doe';
+            btnProjDOE.className = "py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition";
+            btnProjFringe.className = "py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition";
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        btnToggleDefocus.addEventListener('click', () => {
+            state.proj.lensDefocus = !state.proj.lensDefocus;
+            if (state.proj.lensDefocus) {
+                btnToggleDefocus.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-600 text-white border border-indigo-500 transition";
+                btnToggleDefocus.innerText = "已启用";
+            } else {
+                btnToggleDefocus.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition";
+                btnToggleDefocus.innerText = "已禁用";
+            }
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+        });
+
+        btnToggleDistortion.addEventListener('click', () => {
+            state.proj.lensDistortion = !state.proj.lensDistortion;
+            if (state.proj.lensDistortion) {
+                btnToggleDistortion.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-600 text-white border border-indigo-500 transition";
+                btnToggleDistortion.innerText = "已启用";
+            } else {
+                btnToggleDistortion.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition";
+                btnToggleDistortion.innerText = "已禁用";
+            }
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
         });
 
         btnShowWrapped.addEventListener('click', () => {
