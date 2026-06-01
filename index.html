@@ -804,8 +804,62 @@
         sensorCanvas.width = 256;
         sensorCanvas.height = 256;
 
+        // 🌟 新增：提取统一的目标物体高度计算函数，便于重构与阴影检测
+        function getSurfaceHeight(x, y) {
+            let z_height = 0;
+            if (state.activeObjectType === 'sphere') {
+                const r = 1.2;
+                const dSq = x * x + y * y;
+                if (dSq < r * r) z_height = Math.sqrt(r * r - dSq);
+            } else if (state.activeObjectType === 'face') {
+                const baseDome = 0.4 * Math.exp(-(x * x + y * y) / 2.0);
+                const nose = 0.8 * Math.exp(-((x * x) / 0.06 + ((y - 0.25) * (y - 0.25)) / 0.22));
+                const leftCheek = 0.32 * Math.exp(-(((x + 0.5) * (x + 0.5)) / 0.14 + ((y + 0.1) * (y + 0.1)) / 0.18));
+                const rightCheek = 0.32 * Math.exp(-(((x - 0.5) * (x - 0.5)) / 0.14 + ((y + 0.1) * (y + 0.1)) / 0.18));
+                const chin = 0.25 * Math.exp(-((x * x) / 0.12 + ((y + 0.85) * (y + 0.85)) / 0.12));
+                const forehead = 0.15 * Math.exp(-((x * x) / 0.6 + ((y - 0.8) * (y - 0.8)) / 0.3));
+                const leftEye = -0.12 * Math.exp(-(((x + 0.38) * (x + 0.38)) / 0.08 + ((y - 0.45) * (y - 0.45)) / 0.08));
+                const rightEye = -0.12 * Math.exp(-(((x - 0.38) * (x - 0.38)) / 0.08 + ((y - 0.45) * (y - 0.45)) / 0.08));
+                z_height = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEye + rightEye;
+            } else if (state.activeObjectType === 'peaks') {
+                z_height = 0.35 * Math.sin(x * 3.2) * Math.cos(y * 3.2) + 0.18 * Math.cos(x * 6.5) + 0.15 * Math.sin(y * 5.0);
+            }
+            return z_height;
+        }
+
+        // 🌟 修正：投影仪到目标表面射线的物理阴影遮挡检测算法 (纠正方向倒置 Bug)
+        function checkShadowOcclusion(x_b, y_b, z_b) {
+            const baseline = state.cam.x - state.proj.x;
+            const distZ = state.board.z;
+
+            // 投影仪在相机坐标系下的虚拟横向位置
+            const projX_offset = -baseline;
+
+            // 沿投影仪光路向物体进行 8 步光线步进探针检测
+            const steps = 8;
+            for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+                // 线性插值，计算光线传播路径上的当前三维空间坐标 (rx, ry, rz)
+                const rx = x_b + t * (projX_offset - x_b);
+                const ry = y_b * (1 - t);
+
+                // 🌟 核心修正：投影仪处于 z=0 处，所以射线高度 rz 应该向 0 递减（而不是向 distZ 递增！）
+                const rz = z_b * (1 - t);
+
+                // 获取光线当前路径位置对应的物体实际表面高度
+                const sz = getSurfaceHeight(rx, ry);
+
+                // 如果当前位置的实际表面高度大于光束通过的高度，说明光线在半路上被挡住了（产生投影阴影）
+                if (sz > rz + 0.02) {
+                    return true; // 发生几何遮挡
+                }
+            }
+            return false; // 光路无遮挡，可接收正弦条纹
+        }
+
+
         function drawCameraCCDView(currentPhase) {
-            // 🌟 锁定 003CA 相机真实的 320x240 长方形分辨率
+            // 锁定 003CA 相机真实的 320x240 长方形分辨率
             sensorCanvas.width = 320;
             sensorCanvas.height = 240;
 
@@ -819,32 +873,29 @@
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
-            const aspect = w / h; // 🌟 引入长宽比 (320 / 240 = 1.333)
+            const aspect = w / h;
 
-            // 🌟 线性插值与拟合客观测试 CSV 表中不同 Lux 对应的物理参数：
+            // 线性插值客观测试真实参数
             const lux = state.cam.lux;
-            let noiseRatio = 0.05;      // 时序随机噪声比率 (Stationary Noise Ratio)
-            let rowNoiseScale = 0.15;   // 行固定模式噪点 FPN
-            let colNoiseScale = 0.15;   // 列固定模式噪点 FPN
-            let uniformityScale = 0.03; // FPN空间增益非均匀性
-            let evsThreshold = 0.08;    // EVS 对数对比度触发阈值
+            let noiseRatio = 0.05;
+            let rowNoiseScale = 0.15;
+            let colNoiseScale = 0.15;
+            let uniformityScale = 0.03;
+            let evsThreshold = 0.08;
 
             if (lux <= 3) {
-                // 1~3 Lux 极暗：对应极高的 EVS 触发阈值与弱光 FPN
                 noiseRatio = 0.014 + (lux - 1) * 0.001;
                 rowNoiseScale = 0.166 + (lux - 1) * 0.002;
                 colNoiseScale = 0.217 + (lux - 1) * 0.01;
                 uniformityScale = 0.029;
                 evsThreshold = 1.92 - (lux - 1) * 1.0;
             } else if (lux <= 20) {
-                // 5~20 Lux 中低照度：对应 Row ~ 0.24, Col ~ 0.26, Uniformity ~ 5%
                 noiseRatio = 0.068 + (lux - 5) * 0.0007;
                 rowNoiseScale = 0.204 + (lux - 5) * 0.0019;
                 colNoiseScale = 0.215 + (lux - 5) * 0.0036;
                 uniformityScale = 0.053 - (lux - 5) * 0.0003;
-                evsThreshold = 0.50 - (lux - 5) * 0.023; // 阈值由 50% 逐渐下降
+                evsThreshold = 0.50 - (lux - 5) * 0.023;
             } else {
-                // 20~100 Lux 高亮：噪声趋于稳定，EVS 对数触发灵敏度收敛至高精度的 4.98%
                 noiseRatio = 0.078;
                 rowNoiseScale = 0.233;
                 colNoiseScale = 0.269;
@@ -852,56 +903,36 @@
                 evsThreshold = 0.15 - (lux - 20) * 0.0012;
             }
 
-            // EVS 异步事件由当前帧与上一帧对数相位相差触发
             let prevPhase = state.fringe.prevPhase !== undefined ? state.fringe.prevPhase : currentPhase - 0.12;
 
             for (let v = 0; v < h; v++) {
                 const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u++) {
                     const nx = (u / w) * 2 - 1;
-                    // 🌟 引入 aspect 因子，对横向坐标进行拉宽，以实现各向同性，彻底根治拉伸变形
                     const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
-                    // 🌟 1. 模拟镜头径向桶形畸变 (Distortion Model)
+                    // 1. 模拟镜头径向桶形畸变
                     let calcX = x_board;
                     let calcY = y_board;
                     if (state.proj.lensDistortion) {
                         const r2 = x_board * x_board + y_board * y_board;
-                        const k1 = 0.12; // 径向畸变系数
+                        const k1 = 0.12;
                         calcX = x_board * (1.0 + k1 * r2);
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 计算目标物体真实 3D 高度起伏
-                    let z_height = 0;
-                    if (state.activeObjectType === 'sphere') {
-                        const r = 1.2;
-                        const dSq = calcX * calcX + calcY * calcY;
-                        if (dSq < r * r) z_height = Math.sqrt(r * r - dSq);
-                    } else if (state.activeObjectType === 'face') {
-                        const baseDome = 0.4 * Math.exp(-(calcX * calcX + calcY * calcY) / 2.0);
-                        const nose = 0.8 * Math.exp(-((calcX * calcX) / 0.06 + ((calcY - 0.25) * (calcY - 0.25)) / 0.22));
-                        const leftCheek = 0.32 * Math.exp(-(((calcX + 0.5) * (calcX + 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
-                        const rightCheek = 0.32 * Math.exp(-(((calcX - 0.5) * (calcX - 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
-                        const chin = 0.25 * Math.exp(-((calcX * calcX) / 0.12 + ((calcY + 0.85) * (calcY + 0.85)) / 0.12));
-                        const forehead = 0.15 * Math.exp(-((calcX * calcX) / 0.6 + ((calcY - 0.8) * (calcY - 0.8)) / 0.3));
-                        const leftEye = -0.12 * Math.exp(-(((calcX + 0.38) * (calcX + 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
-                        const rightEye = -0.12 * Math.exp(-(((calcX - 0.38) * (calcX - 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
-                        z_height = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEye + rightEye;
-                    } else if (state.activeObjectType === 'peaks') {
-                        z_height = 0.35 * Math.sin(calcX * 3.2) * Math.cos(calcY * 3.2) + 0.18 * Math.cos(calcX * 6.5) + 0.15 * Math.sin(calcY * 5.0);
-                    }
+                    // 🌟 2. 统一调用 getSurfaceHeight 获取高度，杜绝冗余代码
+                    const z_height = getSurfaceHeight(calcX, calcY);
 
-                    // 2. 光栅光线直线投影位移
+                    // 3. 光栅光线直线投影位移
                     const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
 
-                    // 🌟 3. 区分条纹模式与 VCSEL + DOE 静态散斑衍射点阵
+                    // 4. 区分有源条纹与 VCSEL + DOE 静态散斑
                     let fringeVal;
                     let fringeValPrev;
 
                     if (state.proj.projectionMode === 'doe') {
-                        // 静态衍射斑：采用空间随机哈希，不受相偏影响
                         const scale = 25.0;
                         const gridX = Math.floor(projShiftX * scale);
                         const gridY = Math.floor(calcY * scale);
@@ -909,7 +940,6 @@
                         fringeVal = rVal > 0.85 ? 1.0 : -1.0;
                         fringeValPrev = fringeVal;
                     } else {
-                        // DLP 正弦条纹
                         fringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + currentPhase);
                         fringeValPrev = Math.cos(projShiftX * state.fringe.frequency * 3.0 + prevPhase);
                     }
@@ -917,69 +947,66 @@
                     let intensity = 0.5 + 0.5 * fringeVal;
                     let intensityPrev = 0.5 + 0.5 * fringeValPrev;
 
-                    // 🌟 4. 模拟投影透镜景深离焦对比度衰减 (低通滤波，仅条纹模式可见)
+                    // 5. 模拟投影透镜景深离焦衰减
                     if (state.proj.lensDefocus && state.proj.projectionMode === 'fringe') {
-                        const focusZ = 0.3; // 焦平面在面具前表面 (高度约0.3)
-                        const w_defocus = 0.15; // 焦深跨度
+                        const focusZ = 0.3;
+                        const w_defocus = 0.15;
                         const defocusContrast = Math.exp(-Math.pow(z_height - focusZ, 2) / w_defocus);
                         intensity = 0.5 + 0.5 * fringeVal * defocusContrast;
                         intensityPrev = 0.5 + 0.5 * fringeValPrev * defocusContrast;
                     }
 
-                    // ❌ 彻底移除：原本在此处的 boundaryLimit 限制条件，让像素能够完整渲染到 320x240 长方形边缘！
+                    // 🌟 6. 新增：物理阴影遮挡检测 (若被遮挡，则无投影光源到达，光强直接降为暗电流底噪)
+                    const isShadowed = checkShadowOcclusion(calcX, calcY, z_height);
+                    if (isShadowed) {
+                        intensity = 0.05;
+                        intensityPrev = 0.05;
+                    }
 
                     const idx = (v * w + u) * 4;
 
                     if (state.cam.sensorMode === 'evs') {
-                        // EVS 神经形态事件计算模型：对数差分 (Temporal logarithmic difference)
+                        // EVS 对数差分事件
                         const dL = Math.log(intensity + 0.01) - Math.log(intensityPrev + 0.01);
 
                         if (dL > evsThreshold) {
-                            // Up Event（极性正，亮红色点）
                             data[idx] = 245; data[idx + 1] = 40; data[idx + 2] = 40;
                         } else if (dL < -evsThreshold) {
-                            // Down Event（极性负，亮蓝色点）
                             data[idx] = 40; data[idx + 1] = 120; data[idx + 2] = 245;
                         } else {
-                            // 模拟 EVS 背景漏电 BA 噪点
                             if (Math.random() < noiseRatio * 0.015) {
                                 if (Math.random() > 0.5) {
-                                    data[idx] = 180; data[idx + 1] = 40; data[idx + 2] = 40; // 假正
+                                    data[idx] = 180; data[idx + 1] = 40; data[idx + 2] = 40;
                                 } else {
-                                    data[idx] = 40; data[idx + 1] = 120; data[idx + 2] = 180; // 假负
+                                    data[idx] = 40; data[idx + 1] = 120; data[idx + 2] = 180;
                                 }
                             } else {
-                                data[idx] = 8; data[idx + 1] = 10; data[idx + 2] = 15; // 暗电流基底
+                                data[idx] = 8; data[idx + 1] = 10; data[idx + 2] = 15;
                             }
                         }
                         data[idx + 3] = 255;
 
                     } else {
-                        // APS 主动像素传感器模型：
+                        // APS 传统灰度模型：
                         let rawIntensity = intensity;
 
-                        // a. FPN空间非均匀增益调制
                         rawIntensity *= (1.0 + pixelUniformityPattern[v * w + u] * uniformityScale);
-
-                        // b. COB行噪声、列噪声一维静态耦合
                         rawIntensity += rowNoisePattern[v] * rowNoiseScale * 0.035;
                         rawIntensity += colNoisePattern[u] * colNoiseScale * 0.035;
-
-                        // c. 时序随机高斯白噪声
                         rawIntensity += (Math.random() * 2 - 1) * noiseRatio * 0.045;
 
                         let finalIntensity = Math.max(0, Math.min(1.0, rawIntensity));
-                        const cVal = Math.floor(finalIntensity * 230 + 15); // 暗电流电荷偏置 +15
+                        const cVal = Math.floor(finalIntensity * 230 + 15);
 
                         data[idx] = cVal;
                         data[idx + 1] = cVal;
-                        data[idx + 2] = Math.floor(cVal * 1.15); // 偏冷色调
+                        data[idx + 2] = Math.floor(cVal * 1.15);
                         data[idx + 3] = 255;
                     }
                 }
             }
             sCtx.putImageData(imgData, 0, 0);
-            state.fringe.prevPhase = currentPhase; // 缓存上一帧相位，用于时序事件差分
+            state.fringe.prevPhase = currentPhase;
         }
 
 
@@ -994,7 +1021,6 @@
         let lastComputedUnwrappedPhase = null;
 
         function calculatePhaseAndUnwrap() {
-            // 🌟 同步重塑为 320x240 长方形分辨率解算
             phaseCanvas.width = 320;
             phaseCanvas.height = 240;
 
@@ -1007,16 +1033,16 @@
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
-            const aspect = w / h; // 🌟 引入宽高比
+            const aspect = w / h;
 
             for (let v = 0; v < h; v++) {
                 const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u++) {
                     const nx = (u / w) * 2 - 1;
-                    const x_board = nx * 1.6 * aspect; // 🌟 各向同性拉宽横向，根治拉伸形变
+                    const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
-                    // 🌟 模拟镜头径向畸变
+                    // 1. 模拟镜头径向畸变
                     let calcX = x_board;
                     let calcY = y_board;
                     if (state.proj.lensDistortion) {
@@ -1026,35 +1052,23 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    let z_height = 0;
-                    if (state.activeObjectType === 'sphere') {
-                        const r = 1.2;
-                        const dSq = calcX * calcX + calcY * calcY;
-                        if (dSq < r * r) z_height = Math.sqrt(r * r - dSq);
-                    } else if (state.activeObjectType === 'face') {
-                        const baseDome = 0.4 * Math.exp(-(calcX * calcX + calcY * calcY) / 2.0);
-                        const nose = 0.8 * Math.exp(-((calcX * calcX) / 0.06 + ((calcY - 0.25) * (calcY - 0.25)) / 0.22));
-                        const cheekL = 0.32 * Math.exp(-(((calcX + 0.5) * (calcX + 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
-                        const cheekR = 0.32 * Math.exp(-(((calcX - 0.5) * (calcX - 0.5)) / 0.14 + ((calcY + 0.1) * (calcY + 0.1)) / 0.18));
-                        const chin = 0.25 * Math.exp(-((calcX * calcX) / 0.12 + ((calcY + 0.85) * (calcY + 0.85)) / 0.12));
-                        const forehead = 0.15 * Math.exp(-((calcX * calcX) / 0.6 + ((calcY - 0.8) * (calcY - 0.8)) / 0.3));
-                        const leftEye = -0.12 * Math.exp(-(((calcX + 0.38) * (calcX + 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
-                        const rightEye = -0.12 * Math.exp(-(((calcX - 0.38) * (calcX - 0.38)) / 0.08 + ((calcY - 0.45) * (calcY - 0.45)) / 0.08));
-                        z_height = baseDome + nose + cheekL + cheekR + chin + forehead + leftEye + rightEye;
-                    } else if (state.activeObjectType === 'peaks') {
-                        z_height = 0.35 * Math.sin(calcX * 3.2) * Math.cos(calcY * 3.2) + 0.18 * Math.cos(calcX * 6.5) + 0.15 * Math.sin(calcY * 5.0);
-                    }
+                    // 2. 统一调用 getSurfaceHeight
+                    const z_height = getSurfaceHeight(calcX, calcY);
 
                     const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
                     const truePhase = projShiftX * state.fringe.frequency * 3.0;
 
                     let wrappedPhase = Math.atan2(Math.sin(truePhase), Math.cos(truePhase));
 
-                    // ❌ 彻底移除：原本在此处将外部像素强行判定为 -999.0 的逻辑，释放全区域解相数据
+                    // 🌟 3. 阴影遮挡探测：遮挡盲区无法形成相移条纹干涉，强制标注为无效解调点 (-999.0)
+                    const isShadowed = checkShadowOcclusion(calcX, calcY, z_height);
+                    if (isShadowed) {
+                        wrappedPhase = -999.0;
+                    }
 
                     const idx = v * w + u;
                     wrapped[idx] = wrappedPhase;
-                    unwrapped[idx] = truePhase;
+                    unwrapped[idx] = wrappedPhase === -999.0 ? -999.0 : truePhase;
                 }
             }
 
@@ -1063,6 +1077,7 @@
 
             renderPhaseCanvas();
         }
+
 
         function renderPhaseCanvas() {
             if (!lastComputedWrappedPhase) return;
@@ -1160,18 +1175,16 @@
             const colorHelper = new THREE.Color();
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
-            const aspect = w / h; // 🌟 引入宽高比
+            const aspect = w / h;
 
-            // 1. 初始化误差累计变量
             let sumSquareError = 0;
             let activePointCount = 0;
 
-            // 根据实测环境照度模拟系统解相噪声水平 (照度越低，解相波动误差越大)
             const lux = state.cam.lux;
             let noiseAmplitude = 0.0;
             if (lux < 5) noiseAmplitude = 0.09 * (5 - lux) / 4;
             else if (lux < 50) noiseAmplitude = 0.02 * (50 - lux) / 45;
-            else noiseAmplitude = 0.003; // 高照度下系统精度达到最高
+            else noiseAmplitude = 0.003;
 
             for (let v = 0; v < h; v += 1) {
                 const ny = (v / h) * 2 - 1;
@@ -1179,15 +1192,14 @@
                     const idx = v * w + u;
                     const absPhase = lastComputedUnwrappedPhase[idx];
 
-                    // ❌ 彻底移除：原本直接跳过 -999.0 外部点的逻辑（因相移解调已被全幅充实，这里全面保留数据点）
-                    if (absPhase === -999.0) continue; // 仅保留作为极限空指针兜底安全机制
+                    // 🌟 1. 无效相位点（如超出边缘或阴影遮挡点）直接丢弃，不予重建
+                    if (absPhase === -999.0) continue;
 
                     const nx = (u / w) * 2 - 1;
-                    // 🌟 3D重组网格同步通过 aspect 各向同性横向拉宽，确保 3D 重建面不发生椭圆拉伸
                     const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
-                    // 🌟 考虑径向畸变对反演几何网格的影响，完美确保系统闭环
+                    // 2. 模拟镜头径向畸变
                     let calcX = x_board;
                     let calcY = y_board;
                     if (state.proj.lensDistortion) {
@@ -1197,33 +1209,39 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 真实高度 (Ground Truth)
-                    const projShiftX_ideal = absPhase / (state.fringe.frequency * 3.0);
-                    const z_gt = (calcX - projShiftX_ideal) / (0.75 * (baseline / distZ));
+                    // 🌟 3. 统一高度模型提取
+                    const z_gt = getSurfaceHeight(calcX, calcY);
 
-                    // 🌟 探测到的高度 (Reconstructed with Noise)
+                    // 🌟 4. 工业级目标与背景分割：直接过滤掉高度接近平整板的背景点
+                    if (state.activeObjectType !== 'peaks' && z_gt < 0.015) {
+                        continue;
+                    }
+
+                    // 真实物理高度
+                    const projShiftX_ideal = absPhase / (state.fringe.frequency * 3.0);
+                    const z_true = (calcX - projShiftX_ideal) / (0.75 * (baseline / distZ));
+
+                    // 探测到的带噪高度
                     const reconstructionNoise = (Math.random() * 2 - 1) * noiseAmplitude * 1.5;
-                    const z_rec = z_gt + reconstructionNoise;
+                    const z_rec = z_true + reconstructionNoise;
 
                     positions.push(calcX, calcY, z_rec);
 
-                    // 🌟 计算绝对深度重建误差
-                    const errorZ = Math.abs(z_gt - z_rec);
+                    // 累计误差
+                    const errorZ = Math.abs(z_true - z_rec);
                     sumSquareError += errorZ * errorZ;
                     activePointCount++;
 
-                    // 根据用户切换的颜色模式进行着色
+                    // 着色模式控制
                     if (state.pcColorMode === 'error') {
-                        // 🔴 误差着色模式：[0mm ~ 150mm] 对应 [绿色 -> 黄色 -> 红色] 渐变
                         const errInMm = errorZ * 1000;
-                        const t = Math.min(1.0, errInMm / 150.0); // 150mm 为最大误差
+                        const t = Math.min(1.0, errInMm / 150.0);
 
                         const r = t < 0.5 ? t * 2 : 1.0;
                         const g = t < 0.5 ? 1.0 : (1.0 - t) * 2;
                         const b = 0.1;
                         colorHelper.setRGB(r, g, b);
                     } else {
-                        // Height 经典高度着色
                         const normalizedZ = (z_rec + 0.2) / 1.5;
                         colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
                     }
@@ -1248,13 +1266,12 @@
 
             document.getElementById('lblPointCount').innerText = `Points: ${activePointCount}`;
 
-            // 计算均方根误差 (RMSE) 并转换为毫米级 (mm)
             const rmse = activePointCount > 0 ? Math.sqrt(sumSquareError / activePointCount) : 0;
             document.getElementById('lblRMSE').innerText = `RMSE: ${(rmse * 1000).toFixed(2)} mm`;
 
-            // 每次重新生成点云时，同步更新一次 Colorbar
             updateColorbarUI();
         }
+
 
 
 
