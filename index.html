@@ -350,18 +350,17 @@
                             </button>
                         </div>
                     </div>
-                    <!-- 🌟 关键修改：添加 min-h-0，解决 Flex 默认最小尺寸计算导致的 Canvas 纵向溢出遮挡 Bug -->
-                    <div class="flex-1 min-h-0 bg-black flex items-center justify-center p-2 overflow-hidden">
-                        <div class="w-full h-full relative flex items-center justify-center">
-                            <canvas id="phaseAnalysisCanvas" class="block bg-black rounded"
-                                style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 4 / 3; object-fit: contain;"></canvas>
-                            <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono"
-                                id="lblPhaseState">
-                                包裹相位范围: [-π, π]
-                            </div>
+                    <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden p-2">
+                        <canvas id="phaseAnalysisCanvas" class="block bg-black rounded"
+                            style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 4 / 3; object-fit: contain;"></canvas>
+                        <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono"
+                            id="lblPhaseState">
+                            包裹相位范围: [-π, π]
                         </div>
                     </div>
                 </div>
+
+
 
                 <!-- 3. 右侧：3D 重建密集点云视口 (Reconstructed Point Cloud) -->
                 <div id="cloudContainerWindow"
@@ -662,7 +661,10 @@
                 // 🌟 新增光学参数 Uniforms
                 projectionMode: { value: state.proj.projectionMode === 'doe' ? 1 : 0 },
                 lensDefocus: { value: state.proj.lensDefocus ? 1 : 0 },
-                lensDistortion: { value: state.proj.lensDistortion ? 1 : 0 }
+                lensDistortion: { value: state.proj.lensDistortion ? 1 : 0 },
+                // 🌟 新增：解决 3D 视口遮挡阴影所需参数
+                activeObjectType: { value: state.activeObjectType === 'sphere' ? 0 : (state.activeObjectType === 'face' ? 1 : 2) },
+                projectorPos: { value: new THREE.Vector3(state.proj.x, state.proj.y, state.proj.z) }
             };
 
 
@@ -689,14 +691,63 @@
                     uniform float projCenterZ;
                     uniform vec3 activeColor;
                     
-                    // 🌟 新增光学 Uniforms
                     uniform int projectionMode;
                     uniform int lensDefocus;
                     uniform int lensDistortion;
 
-                    // 空间伪随机哈希函数（现场演算DOE无规则干涉散斑）
+                    // 🌟 新增：解决 3D 视口阴影的 GLSL 材质参数
+                    uniform int activeObjectType;
+                    uniform vec3 projectorPos;
+
                     float hash(vec2 p) {
                         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+                    }
+
+                    // 🌟 新增：GLSL 端的统一高度函数，用于 3D 实时阴影探针
+                    float getSurfaceHeightGLSL(vec2 p) {
+                        float z = 0.0;
+                        if (activeObjectType == 0) { // sphere
+                            float r = 1.2;
+                            float distSq = p.x * p.x + p.y * p.y;
+                            if (distSq < r * r) z = sqrt(r * r - distSq);
+                        } else if (activeObjectType == 1) { // face
+                            float baseDome = 0.4 * exp(-(p.x * p.x + p.y * p.y) / 2.0);
+                            float nose = 0.8 * exp(-((p.x * p.x) / 0.06 + ((p.y - 0.25) * (p.y - 0.25)) / 0.22));
+                            float leftCheek = 0.32 * exp(-(((p.x + 0.5) * (p.x + 0.5)) / 0.14 + ((p.y + 0.1) * (p.y + 0.1)) / 0.18));
+                            float rightCheek = 0.32 * exp(-(((p.x - 0.5) * (p.x - 0.5)) / 0.14 + ((p.y + 0.1) * (p.y + 0.1)) / 0.18));
+                            float chin = 0.25 * exp(-((p.x * p.x) / 0.12 + ((p.y + 0.85) * (p.y + 0.85)) / 0.12));
+                            float forehead = 0.15 * exp(-((p.x * p.x) / 0.6 + ((p.y - 0.8) * (p.y - 0.8)) / 0.3));
+                            float leftEye = -0.12 * exp(-(((p.x + 0.38) * (p.x + 0.38)) / 0.08 + ((p.y - 0.45) * (p.y - 0.45)) / 0.08));
+                            float rightEye = -0.12 * exp(-(((p.x - 0.38) * (p.x - 0.38)) / 0.08 + ((p.y - 0.45) * (p.y - 0.45)) / 0.08));
+                            z = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEye + rightEye;
+                        } else if (activeObjectType == 2) { // peaks
+                            z = 0.35 * sin(p.x * 3.2) * cos(p.y * 3.2) + 0.18 * cos(p.x * 6.5) + 0.15 * sin(p.y * 5.0);
+                        }
+                        return z;
+                    }
+
+                    // 🌟 新增：GLSL 光路步进阴影判定 (引入 projCenterZ 阻断自影全黑 Bug)
+                    bool checkShadowGLSL(vec3 pos, vec3 projPos) {
+                        const int steps = 12;
+                        for (int i = 1; i <= steps; i++) {
+                            float t = float(i) / float(steps);
+                            vec3 r = mix(pos, projPos, t);
+                            
+                            // 将世界坐标系转换为面部局部坐标系 (X轴镜像对齐)
+                            vec2 local_xy = vec2(-r.x, r.y);
+                            float ray_local_z = projCenterZ - r.z; 
+                            
+                            if (ray_local_z <= 0.0) {
+                                break; // 射线已穿过背景平面，后续不再进行遮挡计算
+                            }
+                            
+                            float actualZ = getSurfaceHeightGLSL(local_xy);
+                            float selfShadowBias = 0.04 * (1.0 - t) + 0.01;
+                            if (actualZ > ray_local_z + selfShadowBias) {
+                                return true; // 发生几何遮挡！
+                            }
+                        }
+                        return false;
                     }
 
                     void main() {
@@ -708,7 +759,7 @@
                         
                         if (uvProj.x >= 0.0 && uvProj.x <= 1.0 && uvProj.y >= 0.0 && uvProj.y <= 1.0 && vProjectorUV.w > 0.0) {
                             
-                            // 🌟 1. 模拟投影镜头径向畸变
+                            // 1. 模拟投影镜头径向畸变
                             vec2 coords = projCoords.xy;
                             if (lensDistortion == 1) {
                                 float r2 = dot(coords, coords);
@@ -718,23 +769,26 @@
                             float projX = coords.x * 6.2831853; 
                             float intensity = 0.5;
 
-                            // 🌟 2. 区分条纹与散斑
+                            // 2. 区分条纹与散斑
                             if (projectionMode == 1) {
-                                // VCSEL + DOE 静态散斑衍射点阵
                                 vec2 grid = floor(coords * fringeFrequency * 8.0);
                                 float rVal = hash(grid);
                                 intensity = rVal > 0.85 ? 1.0 : 0.0;
                             } else {
-                                // DLP 理想正弦条纹
                                 float fringeVal = cos(projX * fringeFrequency + phaseShift);
                                 
-                                // 🌟 3. 模拟透镜离焦景深对比度衰减 (低通滤波效应)
                                 if (lensDefocus == 1) {
-                                    float localZ = vWorldPosition.z - projCenterZ; // 高度偏离焦深
+                                    float localZ = vWorldPosition.z - projCenterZ; 
                                     float defocusContrast = exp(-pow(localZ - 0.3, 2.0) / 0.15);
                                     fringeVal = fringeVal * defocusContrast;
                                 }
                                 intensity = 0.5 + 0.5 * fringeVal;
+                            }
+
+                            // 🌟 3. 新增：物理自遮挡检测，若光被阻挡，3D 表面贴图强制退化为无光阴影状态
+                            bool isShadowed = checkShadowGLSL(vWorldPosition, projectorPos);
+                            if (isShadowed) {
+                                intensity = 0.05;
                             }
 
                             vec3 stripeColor = vec3(intensity);
@@ -789,6 +843,8 @@
                 targetShaderMaterial.uniforms.projectionMode.value = state.proj.projectionMode === 'doe' ? 1 : 0;
                 targetShaderMaterial.uniforms.lensDefocus.value = state.proj.lensDefocus ? 1 : 0;
                 targetShaderMaterial.uniforms.lensDistortion.value = state.proj.lensDistortion ? 1 : 0;
+                targetShaderMaterial.uniforms.projectorPos.value.set(state.proj.x, state.proj.y, state.proj.z);
+
             }
 
             projModel.position.set(state.proj.x, state.proj.y, state.proj.z);
@@ -827,39 +883,38 @@
             return z_height;
         }
 
-        // 🌟 修正：投影仪到目标表面射线的物理阴影遮挡检测算法 (纠正方向倒置 Bug)
+        // 🌟 修正：投影仪到目标表面射线的物理阴影检测 (回归世界坐标系，保障 100% 物理真实)
         function checkShadowOcclusion(x_b, y_b, z_b) {
-            const baseline = state.cam.x - state.proj.x;
+            // 直接获取投影仪在世界坐标系下的 X 位置
+            const projX = state.proj.x;
             const distZ = state.board.z;
 
-            // 投影仪在相机坐标系下的虚拟横向位置
-            const projX_offset = -baseline;
-
-            // 沿投影仪光路向物体进行 8 步光线步进探针检测
-            const steps = 8;
+            // 沿投影仪光路向物体进行 12 步高精度光线步进探针检测
+            const steps = 12;
             for (let i = 1; i <= steps; i++) {
                 const t = i / steps;
-                // 线性插值，计算光线传播路径上的当前三维空间坐标 (rx, ry, rz)
-                const rx = x_b + t * (projX_offset - x_b);
+                // 线性插值，计算光路路径上的当前世界空间坐标 rx, ry
+                const rx = x_b + t * (projX - x_b);
                 const ry = y_b * (1 - t);
 
-                // 🌟 核心修正：投影仪处于 z=0 处，所以射线高度 rz 应该向 0 递减（而不是向 distZ 递增！）
-                const rz = z_b * (1 - t);
+                // 光线高度 rz 线性平滑过渡到背景板 distZ (5.0m)
+                const rz = z_b + t * (distZ - z_b);
 
-                // 获取光线当前路径位置对应的物体实际表面高度
+                // 获取光路位置对应的物体实际表面高度
                 const sz = getSurfaceHeight(rx, ry);
 
-                // 如果当前位置的实际表面高度大于光束通过的高度，说明光线在半路上被挡住了（产生投影阴影）
-                if (sz > rz + 0.02) {
-                    return true; // 发生几何遮挡
+                // 引入渐进式自影子偏置，防止前景物体边缘自影误判
+                const selfShadowBias = 0.04 * (1.0 - t) + 0.01;
+                if (sz > rz + selfShadowBias) {
+                    return true; // 发生几何遮挡，产生投影阴影
                 }
             }
-            return false; // 光路无遮挡，可接收正弦条纹
+            return false; // 光路畅通
         }
 
 
+
         function drawCameraCCDView(currentPhase) {
-            // 锁定 003CA 相机真实的 320x240 长方形分辨率
             sensorCanvas.width = 320;
             sensorCanvas.height = 240;
 
@@ -875,7 +930,6 @@
             const distZ = state.board.z;
             const aspect = w / h;
 
-            // 线性插值客观测试真实参数
             const lux = state.cam.lux;
             let noiseRatio = 0.05;
             let rowNoiseScale = 0.15;
@@ -909,6 +963,7 @@
                 const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u++) {
                     const nx = (u / w) * 2 - 1;
+                    // 🌟 彻底纠正镜像 Bug：回归正向 nx 世界坐标投影关系，避免几何拉伸与阴影错位！
                     const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
@@ -922,13 +977,13 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 🌟 2. 统一调用 getSurfaceHeight 获取高度，杜绝冗余代码
+                    // 获取高度
                     const z_height = getSurfaceHeight(calcX, calcY);
 
-                    // 3. 光栅光线直线投影位移
+                    // 2. 光栅位移计算
                     const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
 
-                    // 4. 区分有源条纹与 VCSEL + DOE 静态散斑
+                    // 3. 区分条纹与散斑
                     let fringeVal;
                     let fringeValPrev;
 
@@ -947,7 +1002,7 @@
                     let intensity = 0.5 + 0.5 * fringeVal;
                     let intensityPrev = 0.5 + 0.5 * fringeValPrev;
 
-                    // 5. 模拟投影透镜景深离焦衰减
+                    // 4. 模拟离焦衰减
                     if (state.proj.lensDefocus && state.proj.projectionMode === 'fringe') {
                         const focusZ = 0.3;
                         const w_defocus = 0.15;
@@ -956,12 +1011,14 @@
                         intensityPrev = 0.5 + 0.5 * fringeValPrev * defocusContrast;
                     }
 
-                    // 🌟 6. 新增：物理阴影遮挡检测 (若被遮挡，则无投影光源到达，光强直接降为暗电流底噪)
+                    // 🌟 5. 阴影遮挡探测 (方向完美物理对账)
                     const isShadowed = checkShadowOcclusion(calcX, calcY, z_height);
                     if (isShadowed) {
                         intensity = 0.05;
                         intensityPrev = 0.05;
                     }
+
+                    // ❌ 彻底移除：原本在此处的 boundaryLimit 限制条件，让 2D 画幅完整铺满背景板！
 
                     const idx = (v * w + u) * 4;
 
@@ -987,7 +1044,6 @@
                         data[idx + 3] = 255;
 
                     } else {
-                        // APS 传统灰度模型：
                         let rawIntensity = intensity;
 
                         rawIntensity *= (1.0 + pixelUniformityPattern[v * w + u] * uniformityScale);
@@ -1039,6 +1095,7 @@
                 const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u++) {
                     const nx = (u / w) * 2 - 1;
+                    // 🌟 同步正向 nx 世界坐标系对账，根治点云方向相反
                     const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
@@ -1052,7 +1109,7 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 2. 统一调用 getSurfaceHeight
+                    // 2. 获取表面高度
                     const z_height = getSurfaceHeight(calcX, calcY);
 
                     const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
@@ -1060,11 +1117,13 @@
 
                     let wrappedPhase = Math.atan2(Math.sin(truePhase), Math.cos(truePhase));
 
-                    // 🌟 3. 阴影遮挡探测：遮挡盲区无法形成相移条纹干涉，强制标注为无效解调点 (-999.0)
+                    // 3. 阴影遮挡探测
                     const isShadowed = checkShadowOcclusion(calcX, calcY, z_height);
                     if (isShadowed) {
                         wrappedPhase = -999.0;
                     }
+
+                    // ❌ 彻底移除：原本在此处的 boundaryLimit 限制条件，实现无裁剪解调
 
                     const idx = v * w + u;
                     wrapped[idx] = wrappedPhase;
@@ -1192,14 +1251,14 @@
                     const idx = v * w + u;
                     const absPhase = lastComputedUnwrappedPhase[idx];
 
-                    // 🌟 1. 无效相位点（如超出边缘或阴影遮挡点）直接丢弃，不予重建
                     if (absPhase === -999.0) continue;
 
                     const nx = (u / w) * 2 - 1;
+                    // 🌟 同步正向 nx 几何重建，彻底解决点云镜像反置
                     const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
-                    // 2. 模拟镜头径向畸变
+                    // 考虑径向畸变
                     let calcX = x_board;
                     let calcY = y_board;
                     if (state.proj.lensDistortion) {
@@ -1209,15 +1268,12 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 🌟 3. 统一高度模型提取
+                    // 真实高度 (Ground Truth)
                     const z_gt = getSurfaceHeight(calcX, calcY);
 
-                    // 🌟 4. 工业级目标与背景分割：直接过滤掉高度接近平整板的背景点
-                    if (state.activeObjectType !== 'peaks' && z_gt < 0.015) {
-                        continue;
-                    }
+                    // ❌ 彻底移除：工业级分割过滤网（现在点云视口将重新完美密铺并渲染背景板的平整深度！）
 
-                    // 真实物理高度
+                    // 真实投影深度
                     const projShiftX_ideal = absPhase / (state.fringe.frequency * 3.0);
                     const z_true = (calcX - projShiftX_ideal) / (0.75 * (baseline / distZ));
 
@@ -1227,7 +1283,7 @@
 
                     positions.push(calcX, calcY, z_rec);
 
-                    // 累计误差
+                    // 计算绝对深度重建误差
                     const errorZ = Math.abs(z_true - z_rec);
                     sumSquareError += errorZ * errorZ;
                     activePointCount++;
@@ -1271,6 +1327,7 @@
 
             updateColorbarUI();
         }
+
 
 
 
@@ -1350,6 +1407,10 @@
             optPeaks.className = type === 'peaks' ? "py-1.5 px-2 bg-indigo-600 border border-indigo-500 rounded text-xs font-semibold text-white transition" : "py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition";
 
             updateTargetObject();
+            if (targetShaderMaterial) {
+                targetShaderMaterial.uniforms.activeObjectType.value = type === 'sphere' ? 0 : (type === 'face' ? 1 : 2);
+            }
+
             drawCameraCCDView(state.fringe.phase);
             calculatePhaseAndUnwrap();
             rebuild3DPointCloud();
@@ -1638,7 +1699,7 @@
         window.dispatchEvent(new Event('resize'));
 
 
-        // 🌟 手动添加：一键将 3D 点云数据打包并下载为标准的 .xyz 纯文本文件
+        // 🌟 修正：点云数据打包导出 (同步水平镜像方向)
         function downloadXYZ() {
             if (!lastComputedUnwrappedPhase) {
                 showNotification("导出失败", "请先启动高精度点云重构以生成数据！", "error");
@@ -1648,26 +1709,26 @@
             const w = phaseCanvas.width;
             const h = phaseCanvas.height;
 
-            // 写入 XYZ 格式标准头部说明
             let output = "# XYZ Point Cloud File generated by Structure Light Sim\n# Format: X Y Z R G B\n";
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
             const colorHelper = new THREE.Color();
+            const aspect = w / h;
 
-            // 隔 2 个像素采样一次，防止全量数据（512x512 = 26万个点）导致文本文件过大引起浏览器卡死
             for (let v = 0; v < h; v += 2) {
                 for (let u = 0; u < w; u += 2) {
                     const idx = v * w + u;
                     const absPhase = lastComputedUnwrappedPhase[idx];
                     if (absPhase === -999.0) continue;
 
-                    const x_board = (u / w) * 3.5 - 1.75;
-                    const y_board = -(v / h) * 3.5 + 1.75;
+                    const nx = (u / w) * 2 - 1;
+                    // 🌟 同步镜像导出
+                    const x_board = -nx * 1.6 * aspect;
+                    const y_board = -(v / h) * 1.6;
                     const projShiftX = absPhase / (state.fringe.frequency * 3.0);
                     const z_height = (x_board - projShiftX) / (0.75 * (baseline / distZ));
 
-                    // 计算该点的深度伪彩色（与 3D 点云视口渲染的颜色保持 100% 一致）
                     const normalizedZ = (z_height + 0.2) / 1.5;
                     colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
 
@@ -1675,12 +1736,10 @@
                     const g = Math.round(colorHelper.g * 255);
                     const b = Math.round(colorHelper.b * 255);
 
-                    // 按标准的 [X Y Z R G B] 格式追加一行数据
                     output += `${x_board.toFixed(4)} ${y_board.toFixed(4)} ${z_height.toFixed(4)} ${r} ${g} ${b}\n`;
                 }
             }
 
-            // 利用 Blob 机制在前端直接生成并下载文本文件
             const blob = new Blob([output], { type: 'text/plain' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
@@ -1690,6 +1749,7 @@
 
             showNotification("导出成功", "已成功下载高精度三维点云文件！", "success");
         }
+
 
 
         animate();
