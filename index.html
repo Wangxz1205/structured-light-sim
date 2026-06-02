@@ -259,6 +259,11 @@
                         <p class="text-[10px] text-slate-400 leading-normal">
                             点击后，系统会全自动连续投射 $0^\circ, 90^\circ, 180^\circ, 270^\circ$ 的正弦条纹，在后台解调出绝对相位并反演 3D 点云。
                         </p>
+                        <button id="btnRecomputeCurrent"
+                            class="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] rounded border border-slate-700 transition flex items-center justify-center gap-1.5">
+                            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                            重新计算当前模式
+                        </button>
                         <button id="btnRunReconstruction"
                             class="w-full py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs rounded shadow transition flex items-center justify-center gap-1.5">
                             <i data-lucide="refresh-cw" class="w-4 h-4 animate-spin-slow"></i>
@@ -936,6 +941,43 @@
             return false; // 光路畅通
         }
 
+        // ------------------ 6.1 DOE 散斑图案生成函数 ------------------
+        function hash2D(x, y) {
+            const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+            return s - Math.floor(s);
+        }
+
+        function smoothstep(edge0, edge1, x) {
+            const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+            return t * t * (3 - 2 * t);
+        }
+
+        function doeSpeckleIntensity(x, y) {
+            const scale = 32.0;
+
+            const gx = Math.floor(x * scale);
+            const gy = Math.floor(y * scale);
+
+            const fx = x * scale - gx;
+            const fy = y * scale - gy;
+
+            const a = hash2D(gx, gy);
+            const b = hash2D(gx + 1, gy);
+            const c = hash2D(gx, gy + 1);
+            const d = hash2D(gx + 1, gy + 1);
+
+            const ux = smoothstep(0, 1, fx);
+            const uy = smoothstep(0, 1, fy);
+
+            const v1 = a * (1 - ux) + b * ux;
+            const v2 = c * (1 - ux) + d * ux;
+            const noise = v1 * (1 - uy) + v2 * uy;
+
+            // 让散斑更像 DOE 投出来的亮暗颗粒
+            return noise > 0.62 ? 1.0 : noise * 0.45;
+        }
+
+
 
 
         function drawCameraCCDView(currentPhase) {
@@ -1012,16 +1054,16 @@
                     let fringeValPrev;
 
                     if (state.proj.projectionMode === 'doe') {
-                        const scale = 25.0;
-                        const gridX = Math.floor(projShiftX * scale);
-                        const gridY = Math.floor(calcY * scale);
-                        const rVal = Math.abs(Math.sin(gridX * 12.9898 + gridY * 78.233) * 43758.5453) % 1;
-                        fringeVal = rVal > 0.85 ? 1.0 : -1.0;
+                        const speckle = doeSpeckleIntensity(projShiftX, calcY);
+
+                        // 转成 -1 ~ 1，兼容后面的 intensity = 0.5 + 0.5 * fringeVal
+                        fringeVal = speckle * 2.0 - 1.0;
                         fringeValPrev = fringeVal;
                     } else {
                         fringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + currentPhase);
                         fringeValPrev = Math.cos(projShiftX * state.fringe.frequency * 3.0 + prevPhase);
                     }
+
 
                     let intensity = 0.5 + 0.5 * fringeVal;
                     let intensityPrev = 0.5 + 0.5 * fringeValPrev;
@@ -1139,23 +1181,40 @@
                     // 2. 获取表面高度
                     const z_height = getSurfaceHeight(calcX, calcY);
 
+
                     const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
+
+                    let truePhase;
+                    let wrappedPhase;
+
+                    if (state.proj.projectionMode === 'doe') {
+                        // DOE 散斑模式：不做相移解相，模拟单帧散斑匹配得到的视差
+                        const disparity = z_height * (baseline / distZ);
+
+                        // 这里借用 truePhase 存视差信息，后面点云重建会用到
+                        truePhase = disparity;
+
+                        // wrappedPhase 用于第二张图显示，此时不再表示 [-π, π] 包裹相位
+                        wrappedPhase = disparity;
+                    } else {
+                        // DLP 条纹模式：正常相移解相
+                        truePhase = projShiftX * state.fringe.frequency * 3.0;
+                        wrappedPhase = Math.atan2(Math.sin(truePhase), Math.cos(truePhase));
+                    }
+
                     const phaseNoise =
                         (Math.random() * 2 - 1) *
                         methodCfg.noiseScale *
                         (101 - state.cam.lux) / 100;
 
-                    const truePhase =
-                        projShiftX * state.fringe.frequency * 3.0 + phaseNoise;
-
-
-                    let wrappedPhase = Math.atan2(Math.sin(truePhase), Math.cos(truePhase));
 
                     // 3. 阴影遮挡探测
                     const isShadowed = checkShadowOcclusion(calcX, calcY, z_height);
                     if (isShadowed) {
                         wrappedPhase = -999.0;
+                        truePhase = -999.0;
                     }
+
 
                     // ❌ 彻底移除：原本在此处的 boundaryLimit 限制条件，实现无裁剪解调
 
@@ -1181,7 +1240,14 @@
             const data = imgData.data;
 
             const isWrapped = state.phaseStateView === 'wrapped';
-            document.getElementById('lblPhaseState').innerText = isWrapped ? "包裹相位范围: [-π, π]" : "解包裹绝对相位梯度";
+
+            if (state.proj.projectionMode === 'doe') {
+                document.getElementById('lblPhaseState').innerText = "DOE 散斑匹配视差图";
+            } else {
+                document.getElementById('lblPhaseState').innerText =
+                    isWrapped ? "包裹相位范围: [-π, π]" : "解包裹绝对相位梯度";
+            }
+
 
             for (let i = 0; i < w * h; i++) {
                 const idx = i * 4;
@@ -1196,18 +1262,29 @@
                 }
 
                 let colorIntensity = 0;
-                if (isWrapped) {
+
+                if (state.proj.projectionMode === 'doe') {
+                    // DOE 模式下，val 是 disparity 视差，不是相位
+                    colorIntensity = Math.floor(Math.max(0, Math.min(1, val * 1.8)) * 255);
+
+                    data[idx] = Math.floor(colorIntensity * 0.2);
+                    data[idx + 1] = Math.floor(colorIntensity * 0.9);
+                    data[idx + 2] = 255 - Math.floor(colorIntensity * 0.4);
+                } else if (isWrapped) {
                     colorIntensity = Math.floor(((val + Math.PI) / (Math.PI * 2)) * 255);
+
                     data[idx] = colorIntensity;
                     data[idx + 1] = colorIntensity;
                     data[idx + 2] = Math.floor(colorIntensity * 0.5);
                 } else {
                     colorIntensity = Math.floor(((val + 15) / 30) * 255);
                     colorIntensity = Math.max(0, Math.min(255, colorIntensity));
+
                     data[idx] = Math.floor(colorIntensity * 0.3);
                     data[idx + 1] = colorIntensity;
                     data[idx + 2] = Math.floor(colorIntensity * 0.9);
                 }
+
                 data[idx + 3] = 255;
             }
             pCtx.putImageData(imgData, 0, 0);
@@ -1302,23 +1379,46 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 真实高度 (Ground Truth)
+                    // 真实高度 Ground Truth
                     const z_gt = getSurfaceHeight(calcX, calcY);
 
-                    // ❌ 彻底移除：工业级分割过滤网（现在点云视口将重新完美密铺并渲染背景板的平整深度！）
-
-                    // 真实投影深度
-                    const projShiftX_ideal = absPhase / (state.fringe.frequency * 3.0);
-                    const z_true = (calcX - projShiftX_ideal) / (0.75 * (baseline / distZ));
-
-                    // 探测到的带噪高度
+                    // 探测噪声：环境越暗，重建误差越大
                     const reconstructionNoise = (Math.random() * 2 - 1) * noiseAmplitude * 1.5;
-                    const z_rec = z_true + reconstructionNoise;
+
+                    let z_rec;
+
+                    if (state.proj.projectionMode === 'doe') {
+                        // DOE 模式：absPhase 实际存的是 disparity，不是相位
+                        const disparity = absPhase;
+
+                        // calculatePhaseAndUnwrap() 里定义：
+                        // disparity = z_height * baseline / distZ
+                        z_rec = disparity * distZ / baseline;
+
+                        // 给 DOE 加一点匹配误差，否则 RMSE 可能几乎为 0
+                        z_rec += reconstructionNoise * 0.8;
+                    } else {
+                        // DLP 条纹模式：absPhase 是绝对相位
+                        const idealPhaseAtFlatBoard = calcX * state.fringe.frequency * 3.0;
+                        const phaseDiff = idealPhaseAtFlatBoard - absPhase;
+
+                        // 对应：
+                        // projShiftX = calcX - (z_height * baseline / distZ) * 0.75
+                        z_rec =
+                            phaseDiff /
+                            (state.fringe.frequency * 3.0) *
+                            distZ /
+                            baseline /
+                            0.75;
+
+                        z_rec += reconstructionNoise;
+                    }
+
 
                     positions.push(calcX, calcY, z_rec);
 
-                    // 计算绝对深度重建误差
-                    const errorZ = Math.abs(z_true - z_rec);
+                    // 计算绝对深度重建误差：统一用 Ground Truth 对比
+                    const errorZ = Math.abs(z_gt - z_rec);
                     sumSquareError += errorZ * errorZ;
                     activePointCount++;
 
@@ -1396,6 +1496,106 @@
             return phaseMethodConfigs[state.phaseMethod] || phaseMethodConfigs['4step'];
         }
 
+        // ------------------ 8.6 投影模式切换：DLP 条纹 / DOE 散斑 ------------------
+        function updateProjectionModeButtons() {
+            const btnFringe = document.getElementById('btnProjFringe');
+            const btnDOE = document.getElementById('btnProjDOE');
+
+            if (!btnFringe || !btnDOE) return;
+
+            if (state.proj.projectionMode === 'fringe') {
+                btnFringe.className = 'py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition';
+                btnDOE.className = 'py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition';
+            } else {
+                btnFringe.className = 'py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition';
+                btnDOE.className = 'py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition';
+            }
+        }
+
+        function updatePhaseButtonsForProjectionMode() {
+            const phaseButtons = ['btnPhase3', 'btnPhase4', 'btnPhase5'];
+
+            phaseButtons.forEach(id => {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+
+                if (state.proj.projectionMode === 'doe') {
+                    btn.disabled = true;
+                    btn.classList.add('opacity-40', 'cursor-not-allowed');
+                } else {
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-40', 'cursor-not-allowed');
+                }
+            });
+        }
+
+        function setProjectionMode(mode) {
+            state.proj.projectionMode = mode;
+
+            updateProjectionModeButtons();
+            updatePhaseButtonsForProjectionMode();
+
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+            calculatePhaseAndUnwrap();
+            rebuild3DPointCloud();
+
+            const modeName = mode === 'doe'
+                ? 'VCSEL + DOE 散斑模式'
+                : 'DLP 有源条纹模式';
+
+            showNotification('投影模式已切换', `当前模式：${modeName}`, 'success');
+        }
+
+        function recomputeCurrentMode() {
+            updateProjectorMatrix();
+            drawCameraCCDView(state.fringe.phase);
+            calculatePhaseAndUnwrap();
+            rebuild3DPointCloud();
+
+            const recomputeBtn = document.getElementById('btnRecomputeCurrent');
+            if (recomputeBtn) {
+                recomputeBtn.className =
+                    "w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] rounded border border-slate-700 transition flex items-center justify-center gap-1.5";
+                recomputeBtn.innerHTML =
+                    `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 重新计算当前模式`;
+                lucide.createIcons();
+            }
+
+            const modeName = state.proj.projectionMode === 'doe'
+                ? 'DOE 散斑视差重建'
+                : `${getActivePhaseMethodConfig().label} 相移重建`;
+
+            showNotification(
+                '重新计算完成',
+                `${modeName} 已根据当前投影仪、相机和物体参数更新。`,
+                'success'
+            );
+        }
+
+        function markRecomputeNeeded() {
+            const runBtn = document.getElementById('btnRunReconstruction');
+            const recomputeBtn = document.getElementById('btnRecomputeCurrent');
+
+            if (state.proj.projectionMode === 'doe') {
+                if (recomputeBtn) {
+                    recomputeBtn.className =
+                        "w-full py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-[11px] rounded border border-amber-400 transition flex items-center justify-center gap-1.5";
+                    recomputeBtn.innerHTML =
+                        `<i data-lucide="refresh-cw" class="w-3.5 h-3.5 animate-spin"></i> 参数已变化，重新计算 DOE 散斑`;
+                    lucide.createIcons();
+                }
+            } else {
+                if (runBtn) {
+                    runBtn.innerHTML =
+                        `<i data-lucide="refresh-cw" class="w-4 h-4 animate-spin-slow"></i> 参数已变化，请重新重构`;
+                    lucide.createIcons();
+                }
+            }
+        }
+
+
+
         function updatePhaseMethodButtons() {
             const map = {
                 '3step': 'btnPhase3',
@@ -1435,23 +1635,38 @@
         let isAcquiring = false;
 
         async function triggerFourStepPhaseAcquisition() {
-            // 🌟 新增：处理静态无源 DOE 模式冲突（自适应后台有源切换）
-            let originalMode = state.proj.projectionMode;
-            if (originalMode === 'doe') {
-                showNotification("模式兼容提示", "静态DOE散斑不具备相移解算能力。系统已自动在后台切入有源DLP光栅以执行高保真解调！", "success");
-                state.proj.projectionMode = 'fringe';
-
-                // 强制同步按钮外观
-                document.getElementById('btnProjFringe').className = "py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition";
-                document.getElementById('btnProjDOE').className = "py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition";
-
-                updateProjectorMatrix();
-                drawCameraCCDView(state.fringe.phase);
-            }
-
-
             if (isAcquiring) return;
             isAcquiring = true;
+
+            if (state.proj.projectionMode === 'doe') {
+                const runBtn = document.getElementById('btnRunReconstruction');
+
+                runBtn.disabled = true;
+                runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在采集 DOE 散斑图...`;
+                lucide.createIcons();
+
+                state.fringe.phase = 0;
+
+                updateProjectorMatrix();
+                drawCameraCCDView(0);
+                calculatePhaseAndUnwrap();
+                rebuild3DPointCloud();
+
+                runBtn.disabled = false;
+                runBtn.innerHTML = `<i data-lucide="refresh-cw" class="w-4 h-4 animate-spin-slow"></i> 启动高精度点云重构`;
+                lucide.createIcons();
+
+                isAcquiring = false;
+
+                showNotification(
+                    "散斑重建完成",
+                    "VCSEL + DOE 单帧散斑视差估计完成，3D 点云已更新。",
+                    "success"
+                );
+
+                return;
+            }
+
 
             const runBtn = document.getElementById('btnRunReconstruction');
             runBtn.disabled = true;
@@ -1480,24 +1695,25 @@
             runBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-emerald-400"></i> 点云重建已就绪`;
             lucide.createIcons();
 
-            // 🌟 新增：计算完毕后，自适应恢复至初始 DOE 静态状态
-            if (originalMode === 'doe') {
-                state.proj.projectionMode = 'doe';
-                document.getElementById('btnProjDOE').className = "py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition";
-                document.getElementById('btnProjFringe').className = "py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition";
-                updateProjectorMatrix();
-                drawCameraCCDView(state.fringe.phase);
-            }
-
             isAcquiring = false;
             showNotification("重建成功", `${getActivePhaseMethodConfig().label} 相位解调完毕，3D 点云已成功生成并在右下角视口渲染！`, "success");
 
         }
 
         document.getElementById('btnRunReconstruction').addEventListener('click', triggerFourStepPhaseAcquisition);
+        document.getElementById('btnRecomputeCurrent').addEventListener('click', recomputeCurrentMode);
+
         document.getElementById('btnPhase3').addEventListener('click', () => setPhaseMethod('3step'));
         document.getElementById('btnPhase4').addEventListener('click', () => setPhaseMethod('4step'));
         document.getElementById('btnPhase5').addEventListener('click', () => setPhaseMethod('5step'));
+
+        document.getElementById('btnProjFringe').addEventListener('click', () => {
+            setProjectionMode('fringe');
+        });
+
+        document.getElementById('btnProjDOE').addEventListener('click', () => {
+            setProjectionMode('doe');
+        });
 
         // ------------------ 10. UI 与参数滑块绑定 ------------------
         const optSphere = document.getElementById('btnObjSphere');
@@ -1553,9 +1769,16 @@
         projXInput.addEventListener('input', (e) => {
             state.proj.x = parseFloat(e.target.value);
             document.getElementById('projXVal').innerText = `${state.proj.x.toFixed(1)} m`;
+
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
+            if (state.proj.projectionMode === 'doe') {
+                recomputeCurrentMode();
+            } else {
+                markRecomputeNeeded();
+            }
         });
+
 
         fringeFreqInput.addEventListener('input', (e) => {
             state.fringe.frequency = parseFloat(e.target.value);
@@ -1575,17 +1798,31 @@
         camXInput.addEventListener('input', (e) => {
             state.cam.x = parseFloat(e.target.value);
             document.getElementById('camXVal').innerText = `${state.cam.x.toFixed(1)} m`;
+
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
+            if (state.proj.projectionMode === 'doe') {
+                recomputeCurrentMode();
+            } else {
+                markRecomputeNeeded();
+            }
         });
+
 
         boardZInput.addEventListener('input', (e) => {
             state.board.z = parseFloat(e.target.value);
             document.getElementById('boardZVal').innerText = `${state.board.z.toFixed(1)} m`;
+
             targetMesh.position.set(0, 0, state.board.z);
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
+            if (state.proj.projectionMode === 'doe') {
+                recomputeCurrentMode();
+            } else {
+                markRecomputeNeeded();
+            }
         });
+
 
         document.getElementById('resetBtn').addEventListener('click', () => {
             state.proj.x = -2.0;
