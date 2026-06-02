@@ -235,8 +235,27 @@
                     <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2">
                         <h4 class="text-xs font-bold text-slate-200 flex items-center">
                             <i data-lucide="play" class="w-3.5 h-3.5 mr-1 text-emerald-400"></i>
-                            4步相移条纹采集与重建
+                            多步相移条纹采集与重建
                         </h4>
+
+                        <div class="grid grid-cols-3 gap-2">
+                            <button id="btnPhase3"
+                                class="py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition">
+                                3步快速
+                            </button>
+                            <button id="btnPhase4"
+                                class="py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition">
+                                4步标准
+                            </button>
+                            <button id="btnPhase5"
+                                class="py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition">
+                                5步抗噪
+                            </button>
+                        </div>
+
+                        <p class="text-[10px] text-slate-400 leading-normal" id="phaseMethodDesc">
+                            当前采用 4 步相移：0°, 90°, 180°, 270°，精度和速度较均衡。
+                        </p>
                         <p class="text-[10px] text-slate-400 leading-normal">
                             点击后，系统会全自动连续投射 $0^\circ, 90^\circ, 180^\circ, 270^\circ$ 的正弦条纹，在后台解调出绝对相位并反演 3D 点云。
                         </p>
@@ -513,8 +532,13 @@
                 z: 5.0
             },
             phaseStateView: 'wrapped', // 'wrapped' | 'unwrapped'
-            pcColorMode: 'height' // 🌟 新增：'height' 按高度着色 | 'error' 按重建误差着色
+            pcColorMode: 'height', // 🌟 新增：'height' 按高度着色 | 'error' 按重建误差着色
+
+            // 当前相移算法：'3step' | '4step' | '5step'
+            phaseMethod: '4step'
         };
+
+
 
         // 🌟 新增：根据 mono COB 评测表预生成一维 Row / Col 空间固定模式噪声 (FPN) 纹理
         const rowNoisePattern = new Float32Array(256);
@@ -1077,8 +1101,11 @@
         let lastComputedUnwrappedPhase = null;
 
         function calculatePhaseAndUnwrap() {
+            const methodCfg = getActivePhaseMethodConfig();
+
             phaseCanvas.width = 320;
             phaseCanvas.height = 240;
+
 
             const w = phaseCanvas.width;
             const h = phaseCanvas.height;
@@ -1113,7 +1140,14 @@
                     const z_height = getSurfaceHeight(calcX, calcY);
 
                     const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
-                    const truePhase = projShiftX * state.fringe.frequency * 3.0;
+                    const phaseNoise =
+                        (Math.random() * 2 - 1) *
+                        methodCfg.noiseScale *
+                        (101 - state.cam.lux) / 100;
+
+                    const truePhase =
+                        projShiftX * state.fringe.frequency * 3.0 + phaseNoise;
+
 
                     let wrappedPhase = Math.atan2(Math.sin(truePhase), Math.cos(truePhase));
 
@@ -1328,6 +1362,71 @@
             updateColorbarUI();
         }
 
+        // ------------------ 8.5 多步相移算法配置 ------------------
+        const phaseMethodConfigs = {
+            '3step': {
+                label: '3步快速',
+                steps: 3,
+                phases: [0, 2 * Math.PI / 3, 4 * Math.PI / 3],
+                angleLabels: ['0°', '120°', '240°'],
+                desc: '当前采用 3 步相移：0°, 120°, 240°，采集速度最快，但抗噪能力较弱。',
+                noiseScale: 0.035
+            },
+
+            '4step': {
+                label: '4步标准',
+                steps: 4,
+                phases: [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2],
+                angleLabels: ['0°', '90°', '180°', '270°'],
+                desc: '当前采用 4 步相移：0°, 90°, 180°, 270°，精度和速度较均衡。',
+                noiseScale: 0.018
+            },
+
+            '5step': {
+                label: '5步抗噪',
+                steps: 5,
+                phases: [0, 2 * Math.PI / 5, 4 * Math.PI / 5, 6 * Math.PI / 5, 8 * Math.PI / 5],
+                angleLabels: ['0°', '72°', '144°', '216°', '288°'],
+                desc: '当前采用 5 步相移：0°, 72°, 144°, 216°, 288°，抗噪更强，但采集速度较慢。',
+                noiseScale: 0.009
+            }
+        };
+
+        function getActivePhaseMethodConfig() {
+            return phaseMethodConfigs[state.phaseMethod] || phaseMethodConfigs['4step'];
+        }
+
+        function updatePhaseMethodButtons() {
+            const map = {
+                '3step': 'btnPhase3',
+                '4step': 'btnPhase4',
+                '5step': 'btnPhase5'
+            };
+
+            Object.entries(map).forEach(([method, btnId]) => {
+                const btn = document.getElementById(btnId);
+                if (!btn) return;
+
+                if (state.phaseMethod === method) {
+                    btn.className = 'py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition';
+                } else {
+                    btn.className = 'py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition';
+                }
+            });
+
+            const desc = document.getElementById('phaseMethodDesc');
+            if (desc) {
+                desc.innerText = getActivePhaseMethodConfig().desc;
+            }
+        }
+
+        function setPhaseMethod(method) {
+            state.phaseMethod = method;
+            updatePhaseMethodButtons();
+
+            calculatePhaseAndUnwrap();
+            rebuild3DPointCloud();
+        }
 
 
 
@@ -1358,11 +1457,12 @@
             runBtn.disabled = true;
             runBtn.classList.add('opacity-50');
 
-            const phases = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
-            const angleLabels = ["0°", "90°", "180°", "270°"];
+            const methodCfg = getActivePhaseMethodConfig();
+            const phases = methodCfg.phases;
+            const angleLabels = methodCfg.angleLabels;
 
-            for (let i = 0; i < 4; i++) {
-                runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在采集第 ${i + 1}/4 帧 (${angleLabels[i]})...`;
+            for (let i = 0; i < phases.length; i++) {
+                runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在采集第 ${i + 1}/${phases.length} 帧 (${angleLabels[i]})...`;
                 lucide.createIcons();
 
                 state.fringe.phase = phases[i];
@@ -1390,10 +1490,14 @@
             }
 
             isAcquiring = false;
-            showNotification("重建成功", "四步相移相位解调完毕，3D 点云已成功生成并在右下角视口渲染！", "success");
+            showNotification("重建成功", `${getActivePhaseMethodConfig().label} 相位解调完毕，3D 点云已成功生成并在右下角视口渲染！`, "success");
+
         }
 
         document.getElementById('btnRunReconstruction').addEventListener('click', triggerFourStepPhaseAcquisition);
+        document.getElementById('btnPhase3').addEventListener('click', () => setPhaseMethod('3step'));
+        document.getElementById('btnPhase4').addEventListener('click', () => setPhaseMethod('4step'));
+        document.getElementById('btnPhase5').addEventListener('click', () => setPhaseMethod('5step'));
 
         // ------------------ 10. UI 与参数滑块绑定 ------------------
         const optSphere = document.getElementById('btnObjSphere');
