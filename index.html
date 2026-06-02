@@ -662,7 +662,7 @@
                 projectionMode: { value: state.proj.projectionMode === 'doe' ? 1 : 0 },
                 lensDefocus: { value: state.proj.lensDefocus ? 1 : 0 },
                 lensDistortion: { value: state.proj.lensDistortion ? 1 : 0 },
-                // 🌟 新增：解决 3D 视口遮挡阴影所需参数
+                // 🌟 修复黑屏致命 Bug：补全 Shader 内部声明对应的 JS Uniforms
                 activeObjectType: { value: state.activeObjectType === 'sphere' ? 0 : (state.activeObjectType === 'face' ? 1 : 2) },
                 projectorPos: { value: new THREE.Vector3(state.proj.x, state.proj.y, state.proj.z) }
             };
@@ -886,7 +886,7 @@
         // 🌟 修正：投影仪到目标表面射线的物理阴影检测 (回归世界坐标系，保障 100% 物理真实)
         function checkShadowOcclusion(x_b, y_b, z_b) {
             // 直接获取投影仪在世界坐标系下的 X 位置
-            const projX = state.proj.x;
+            const projX = -state.proj.x;
             const distZ = state.board.z;
 
             // 沿投影仪光路向物体进行 12 步高精度光线步进探针检测
@@ -1724,7 +1724,7 @@
 
                     const nx = (u / w) * 2 - 1;
                     // 🌟 同步镜像导出
-                    const x_board = -nx * 1.6 * aspect;
+                    const x_board = nx * 1.6 * aspect;
                     const y_board = -(v / h) * 1.6;
                     const projShiftX = absPhase / (state.fringe.frequency * 3.0);
                     const z_height = (x_board - projShiftX) / (0.75 * (baseline / distZ));
