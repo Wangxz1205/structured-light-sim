@@ -1144,85 +1144,6 @@
         let lastComputedHeightMap = null;
         let capturedPhaseFrames = [];
 
-        function clamp01(x) {
-            return Math.max(0, Math.min(1, x));
-        }
-
-        // 统一相机测量模型：算法帧也必须经过 APS / EVS 模型，否则 EVS 只会影响显示，不会影响 RMSE。
-        function applyCameraSensorModel(rawIntensity, prevIntensity, u, v) {
-            const luxNorm = Math.max(0.01, state.cam.lux / 100.0);
-
-            const rowIdx = v % rowNoisePattern.length;
-            const colIdx = u % colNoisePattern.length;
-            const pixIdx = (v % 256) * 256 + (u % 256);
-
-            if (state.cam.sensorMode === 'evs') {
-                // EVS / 事件增强模式。
-                // 这版让照度真正进入算法帧：低照度时事件置信度下降、阈值量化和背景活动噪声增加，
-                // 因此 1 Lux 和 100 Lux 的 RMSE 不会再几乎一样。
-                const eps = 0.01;
-
-                const logI = Math.log(rawIntensity * luxNorm + eps);
-                const logPrev = Math.log(prevIntensity * luxNorm + eps);
-                const dLog = logI - logPrev;
-
-                // 低照度下事件阈值更难触发。
-                const eventThreshold = 0.025 + 0.12 * Math.pow(1.0 - luxNorm, 1.4);
-                const eventStrength = Math.abs(dLog);
-                const eventConfidence = Math.max(
-                    0.0,
-                    Math.min(1.0, (eventStrength - eventThreshold) / (eventThreshold * 2.5))
-                );
-
-                // 基础灰度保留 log 响应，但不再完全消除照度影响。
-                const logMin = Math.log(eps);
-                const logMax = Math.log(1.0 + eps);
-                let measured = (Math.log(rawIntensity * luxNorm + eps) - logMin) / (logMax - logMin);
-
-                // 低照度下，事件重建灰度对比度下降。
-                const contrastKeep = 0.45 + 0.55 * Math.sqrt(luxNorm);
-                measured = 0.5 + (measured - 0.5) * contrastKeep;
-
-                // 事件置信度低时，向中性灰度回退。
-                measured = measured * (0.55 + 0.45 * eventConfidence) + 0.5 * (1.0 - eventConfidence) * 0.45;
-
-                // EVS 低照度噪声：比 APS 小，但不是没有。
-                const evsTemporalNoise = 0.010 + 0.055 * Math.pow(1.0 - luxNorm, 1.25);
-
-                // 背景活动噪声，低照度更明显。
-                const backgroundActivityNoise = 0.008 + 0.040 * Math.pow(1.0 - luxNorm, 1.6);
-
-                // 事件阈值量化误差，事件越弱越大。
-                const thresholdQuantNoise = 0.006 + 0.045 * (1.0 - eventConfidence);
-
-                measured += (Math.random() * 2 - 1) * evsTemporalNoise;
-                measured += (Math.random() * 2 - 1) * backgroundActivityNoise;
-                measured += (Math.random() * 2 - 1) * thresholdQuantNoise;
-
-                // EVS 的 FPN 较弱，但不是没有。
-                measured += rowNoisePattern[rowIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += colNoisePattern[colIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += pixelUniformityPattern[pixIdx] * (0.003 + 0.006 * (1.0 - luxNorm));
-
-                return clamp01(measured);
-            }
-
-            // APS 普通灰度模式：低照度下读出噪声、shot noise、FPN 都更明显。
-            let measured = rawIntensity * (0.25 + 0.75 * luxNorm);
-
-            const readNoiseAmp = 0.006 + 0.075 * Math.pow(1.0 - luxNorm, 1.7);
-            const shotNoiseAmp = 0.006 + 0.045 * Math.sqrt(Math.max(0, rawIntensity)) * Math.pow(1.0 - luxNorm, 1.2);
-            const fpnAmp = 0.006 + 0.026 * (1.0 - luxNorm);
-
-            measured += (Math.random() * 2 - 1) * readNoiseAmp;
-            measured += (Math.random() * 2 - 1) * shotNoiseAmp;
-            measured += rowNoisePattern[rowIdx] * fpnAmp;
-            measured += colNoisePattern[colIdx] * fpnAmp;
-            measured += pixelUniformityPattern[pixIdx] * fpnAmp * 0.6;
-
-            return clamp01(measured);
-        }
-
         // 生成一帧“相机灰度图”。注意：这一步是仿真相机成像；后面的相位/视差由算法从图像求出。
         function synthesizeCameraGrayFrame(currentPhase, useFlatObject = false) {
             const w = 320;
@@ -1233,6 +1154,7 @@
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
             const aspect = w / h;
+            const luxFactor = Math.max(0.05, (101 - state.cam.lux) / 100);
 
             for (let v = 0; v < h; v++) {
                 const ny = (v / h) * 2 - 1;
@@ -1278,37 +1200,10 @@
                         frame[idx] = 0.05;
                         mask[idx] = 0;
                     } else {
-                        let prevIntensity;
-
-                        if (state.proj.projectionMode === 'doe') {
-                            // DOE 散斑是静态图案，这里用微小坐标扰动模拟上一时刻/参考事件变化。
-                            prevIntensity = doeSpeckleIntensity(projShiftX + 0.015, calcY);
-                        } else {
-                            // 条纹相移时，EVS 参考上一相移帧。
-                            const prevPhase = currentPhase - 0.12;
-                            let prevFringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + prevPhase);
-
-                            if (state.proj.lensDefocus) {
-                                const focusZ = 0.3;
-                                const w_defocus = 0.15;
-                                const defocusContrast = Math.exp(-Math.pow(z_height - focusZ, 2) / w_defocus);
-                                prevFringeVal *= defocusContrast;
-                            }
-
-                            prevIntensity = 0.5 + 0.5 * prevFringeVal;
-                        }
-
-                        frame[idx] = applyCameraSensorModel(intensity, prevIntensity, u, v);
+                        // 这里加入相机噪声，保证 RMSE 不是理想闭环的 0。
+                        const noise = (Math.random() * 2 - 1) * 0.018 * luxFactor;
+                        frame[idx] = Math.max(0, Math.min(1, intensity + noise));
                         mask[idx] = 1;
-
-                        // 极低照度 APS 下，模拟部分像素信噪比过低导致无效。
-                        if (state.cam.sensorMode === 'aps' && state.cam.lux < 8) {
-                            const dropProb = (8 - state.cam.lux) / 8 * 0.12;
-                            if (Math.random() < dropProb) {
-                                mask[idx] = 0;
-                                frame[idx] = 0.02;
-                            }
-                        }
                     }
                 }
             }
@@ -2284,9 +2179,6 @@
             btnSensorEVS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition";
             lblSensorMode.innerText = "APS (Grayscale)";
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('已切换 APS，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         // 切换为 EVS 异步事件极性模式
@@ -2294,11 +2186,8 @@
             state.cam.sensorMode = 'evs';
             btnSensorEVS.className = "text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold transition";
             btnSensorAPS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition";
-            lblSensorMode.innerText = "EVS (Event-Enhanced)";
+            lblSensorMode.innerText = "EVS (Event-Based)";
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('已切换 EVS，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         // 🌟 新增：高度与重建误差着色模式切换监听

@@ -1144,85 +1144,6 @@
         let lastComputedHeightMap = null;
         let capturedPhaseFrames = [];
 
-        function clamp01(x) {
-            return Math.max(0, Math.min(1, x));
-        }
-
-        // 统一相机测量模型：算法帧也必须经过 APS / EVS 模型，否则 EVS 只会影响显示，不会影响 RMSE。
-        function applyCameraSensorModel(rawIntensity, prevIntensity, u, v) {
-            const luxNorm = Math.max(0.01, state.cam.lux / 100.0);
-
-            const rowIdx = v % rowNoisePattern.length;
-            const colIdx = u % colNoisePattern.length;
-            const pixIdx = (v % 256) * 256 + (u % 256);
-
-            if (state.cam.sensorMode === 'evs') {
-                // EVS / 事件增强模式。
-                // 这版让照度真正进入算法帧：低照度时事件置信度下降、阈值量化和背景活动噪声增加，
-                // 因此 1 Lux 和 100 Lux 的 RMSE 不会再几乎一样。
-                const eps = 0.01;
-
-                const logI = Math.log(rawIntensity * luxNorm + eps);
-                const logPrev = Math.log(prevIntensity * luxNorm + eps);
-                const dLog = logI - logPrev;
-
-                // 低照度下事件阈值更难触发。
-                const eventThreshold = 0.025 + 0.12 * Math.pow(1.0 - luxNorm, 1.4);
-                const eventStrength = Math.abs(dLog);
-                const eventConfidence = Math.max(
-                    0.0,
-                    Math.min(1.0, (eventStrength - eventThreshold) / (eventThreshold * 2.5))
-                );
-
-                // 基础灰度保留 log 响应，但不再完全消除照度影响。
-                const logMin = Math.log(eps);
-                const logMax = Math.log(1.0 + eps);
-                let measured = (Math.log(rawIntensity * luxNorm + eps) - logMin) / (logMax - logMin);
-
-                // 低照度下，事件重建灰度对比度下降。
-                const contrastKeep = 0.45 + 0.55 * Math.sqrt(luxNorm);
-                measured = 0.5 + (measured - 0.5) * contrastKeep;
-
-                // 事件置信度低时，向中性灰度回退。
-                measured = measured * (0.55 + 0.45 * eventConfidence) + 0.5 * (1.0 - eventConfidence) * 0.45;
-
-                // EVS 低照度噪声：比 APS 小，但不是没有。
-                const evsTemporalNoise = 0.010 + 0.055 * Math.pow(1.0 - luxNorm, 1.25);
-
-                // 背景活动噪声，低照度更明显。
-                const backgroundActivityNoise = 0.008 + 0.040 * Math.pow(1.0 - luxNorm, 1.6);
-
-                // 事件阈值量化误差，事件越弱越大。
-                const thresholdQuantNoise = 0.006 + 0.045 * (1.0 - eventConfidence);
-
-                measured += (Math.random() * 2 - 1) * evsTemporalNoise;
-                measured += (Math.random() * 2 - 1) * backgroundActivityNoise;
-                measured += (Math.random() * 2 - 1) * thresholdQuantNoise;
-
-                // EVS 的 FPN 较弱，但不是没有。
-                measured += rowNoisePattern[rowIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += colNoisePattern[colIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += pixelUniformityPattern[pixIdx] * (0.003 + 0.006 * (1.0 - luxNorm));
-
-                return clamp01(measured);
-            }
-
-            // APS 普通灰度模式：低照度下读出噪声、shot noise、FPN 都更明显。
-            let measured = rawIntensity * (0.25 + 0.75 * luxNorm);
-
-            const readNoiseAmp = 0.006 + 0.075 * Math.pow(1.0 - luxNorm, 1.7);
-            const shotNoiseAmp = 0.006 + 0.045 * Math.sqrt(Math.max(0, rawIntensity)) * Math.pow(1.0 - luxNorm, 1.2);
-            const fpnAmp = 0.006 + 0.026 * (1.0 - luxNorm);
-
-            measured += (Math.random() * 2 - 1) * readNoiseAmp;
-            measured += (Math.random() * 2 - 1) * shotNoiseAmp;
-            measured += rowNoisePattern[rowIdx] * fpnAmp;
-            measured += colNoisePattern[colIdx] * fpnAmp;
-            measured += pixelUniformityPattern[pixIdx] * fpnAmp * 0.6;
-
-            return clamp01(measured);
-        }
-
         // 生成一帧“相机灰度图”。注意：这一步是仿真相机成像；后面的相位/视差由算法从图像求出。
         function synthesizeCameraGrayFrame(currentPhase, useFlatObject = false) {
             const w = 320;
@@ -1233,6 +1154,7 @@
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
             const aspect = w / h;
+            const luxFactor = Math.max(0.05, (101 - state.cam.lux) / 100);
 
             for (let v = 0; v < h; v++) {
                 const ny = (v / h) * 2 - 1;
@@ -1278,37 +1200,10 @@
                         frame[idx] = 0.05;
                         mask[idx] = 0;
                     } else {
-                        let prevIntensity;
-
-                        if (state.proj.projectionMode === 'doe') {
-                            // DOE 散斑是静态图案，这里用微小坐标扰动模拟上一时刻/参考事件变化。
-                            prevIntensity = doeSpeckleIntensity(projShiftX + 0.015, calcY);
-                        } else {
-                            // 条纹相移时，EVS 参考上一相移帧。
-                            const prevPhase = currentPhase - 0.12;
-                            let prevFringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + prevPhase);
-
-                            if (state.proj.lensDefocus) {
-                                const focusZ = 0.3;
-                                const w_defocus = 0.15;
-                                const defocusContrast = Math.exp(-Math.pow(z_height - focusZ, 2) / w_defocus);
-                                prevFringeVal *= defocusContrast;
-                            }
-
-                            prevIntensity = 0.5 + 0.5 * prevFringeVal;
-                        }
-
-                        frame[idx] = applyCameraSensorModel(intensity, prevIntensity, u, v);
+                        // 这里加入相机噪声，保证 RMSE 不是理想闭环的 0。
+                        const noise = (Math.random() * 2 - 1) * 0.018 * luxFactor;
+                        frame[idx] = Math.max(0, Math.min(1, intensity + noise));
                         mask[idx] = 1;
-
-                        // 极低照度 APS 下，模拟部分像素信噪比过低导致无效。
-                        if (state.cam.sensorMode === 'aps' && state.cam.lux < 8) {
-                            const dropProb = (8 - state.cam.lux) / 8 * 0.12;
-                            if (Math.random() < dropProb) {
-                                mask[idx] = 0;
-                                frame[idx] = 0.02;
-                            }
-                        }
                     }
                 }
             }
@@ -1361,111 +1256,41 @@
             return { wrapped, valid, width: w, height: h };
         }
 
-        // 质量引导二维相位展开：从图像边界的平面区域开始，逐步传播相位差。
-        // 这比“逐行展开”稳定，能避免点云被 2π 跳变撕裂成壳。
+        // 简单二维相位展开：先横向，再纵向。教学仿真足够使用。
         function unwrapPhaseSimple(wrapped, valid, w, h) {
-            const total = w * h;
-            const unwrapped = new Float32Array(total);
-            const visited = new Uint8Array(total);
-            const queue = [];
+            const unwrapped = new Float32Array(w * h);
 
-            for (let i = 0; i < total; i++) {
-                unwrapped[i] = -999.0;
+            for (let i = 0; i < w * h; i++) {
+                unwrapped[i] = wrapped[i];
             }
 
-            function pushSeed(idx) {
-                if (valid[idx] && !visited[idx] && wrapped[idx] !== -999.0) {
-                    visited[idx] = 1;
-                    unwrapped[idx] = wrapped[idx];
-                    queue.push(idx);
-                }
-            }
-
-            // 从四周边界开始。边界通常是背景平板，真实相位差接近 0，是最稳的展开起点。
-            for (let u = 0; u < w; u++) {
-                pushSeed(u);
-                pushSeed((h - 1) * w + u);
-            }
+            // 横向展开
             for (let v = 0; v < h; v++) {
-                pushSeed(v * w);
-                pushSeed(v * w + (w - 1));
-            }
+                for (let u = 1; u < w; u++) {
+                    const idx = v * w + u;
+                    const prev = v * w + u - 1;
+                    if (!valid[idx] || !valid[prev]) continue;
 
-            // 如果边界全被遮挡，则从中心附近找一个有效点兜底。
-            if (queue.length === 0) {
-                const cx = Math.floor(w / 2);
-                const cy = Math.floor(h / 2);
-                let bestIdx = -1;
-                let bestDist = Infinity;
-
-                for (let v = 0; v < h; v++) {
-                    for (let u = 0; u < w; u++) {
-                        const idx = v * w + u;
-                        if (!valid[idx] || wrapped[idx] === -999.0) continue;
-                        const d = (u - cx) * (u - cx) + (v - cy) * (v - cy);
-                        if (d < bestDist) {
-                            bestDist = d;
-                            bestIdx = idx;
-                        }
-                    }
+                    let diff = unwrapped[idx] - unwrapped[prev];
+                    if (diff > Math.PI) unwrapped[idx] -= 2 * Math.PI;
+                    else if (diff < -Math.PI) unwrapped[idx] += 2 * Math.PI;
                 }
-
-                if (bestIdx >= 0) pushSeed(bestIdx);
             }
 
-            const offsets = [1, -1, w, -w];
+            // 纵向修正
+            for (let u = 0; u < w; u++) {
+                for (let v = 1; v < h; v++) {
+                    const idx = v * w + u;
+                    const prev = (v - 1) * w + u;
+                    if (!valid[idx] || !valid[prev]) continue;
 
-            while (queue.length > 0) {
-                const idx = queue.shift();
-                const u = idx % w;
-
-                for (let k = 0; k < offsets.length; k++) {
-                    const nidx = idx + offsets[k];
-
-                    if (nidx < 0 || nidx >= total) continue;
-                    if ((offsets[k] === 1 && u === w - 1) || (offsets[k] === -1 && u === 0)) continue;
-                    if (!valid[nidx] || visited[nidx] || wrapped[nidx] === -999.0) continue;
-
-                    const localDiff = wrapToPi(wrapped[nidx] - wrapped[idx]);
-                    unwrapped[nidx] = unwrapped[idx] + localDiff;
-                    visited[nidx] = 1;
-                    queue.push(nidx);
+                    let diff = unwrapped[idx] - unwrapped[prev];
+                    if (diff > Math.PI) unwrapped[idx] -= 2 * Math.PI;
+                    else if (diff < -Math.PI) unwrapped[idx] += 2 * Math.PI;
                 }
             }
 
             return unwrapped;
-        }
-
-        // 对高度图做一次小窗口中值滤波，去掉孤立误匹配点，避免点云出现尖刺。
-        function medianFilterHeightMap(heightMap, w, h) {
-            const out = new Float32Array(heightMap.length);
-            const vals = [];
-
-            for (let v = 0; v < h; v++) {
-                for (let u = 0; u < w; u++) {
-                    const idx = v * w + u;
-                    vals.length = 0;
-
-                    for (let dy = -1; dy <= 1; dy++) {
-                        for (let dx = -1; dx <= 1; dx++) {
-                            const x = u + dx;
-                            const y = v + dy;
-                            if (x < 0 || x >= w || y < 0 || y >= h) continue;
-                            const val = heightMap[y * w + x];
-                            if (val !== -999.0 && Number.isFinite(val)) vals.push(val);
-                        }
-                    }
-
-                    if (vals.length < 3) {
-                        out[idx] = heightMap[idx];
-                    } else {
-                        vals.sort((a, b) => a - b);
-                        out[idx] = vals[Math.floor(vals.length / 2)];
-                    }
-                }
-            }
-
-            return out;
         }
 
         function clearAlgorithmOutputs(message = '请点击按钮采集并重建') {
@@ -1487,8 +1312,7 @@
             document.getElementById('lblRMSE').innerText = 'RMSE: --';
         }
 
-        // DLP 条纹：真正从采集到的多帧灰度图中解相，再由“参考相位 - 物体相位”的相位差反推高度。
-        // 关键修正：只展开“相位差”，不要分别展开参考相位和物体相位，否则 2π 分支不同会把点云撕裂成壳。
+        // DLP 条纹：真正从采集到的多帧灰度图中解相，再由相位差反推高度。
         function calculatePhaseAndUnwrap() {
             phaseCanvas.width = 320;
             phaseCanvas.height = 240;
@@ -1497,13 +1321,14 @@
             const h = phaseCanvas.height;
             const totalPixels = w * h;
 
-            const wrapped = new Float32Array(totalPixels).fill(-999.0);
-            const unwrapped = new Float32Array(totalPixels).fill(-999.0);
-            let heightMap = new Float32Array(totalPixels).fill(-999.0);
+            const wrapped = new Float32Array(totalPixels);
+            const unwrapped = new Float32Array(totalPixels);
+            const heightMap = new Float32Array(totalPixels);
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
 
+            // DOE 不走相移解相，由 computeDOEDisparityByBlockMatching() 单独计算。
             if (state.proj.projectionMode === 'doe') {
                 clearAlgorithmOutputs('DOE 模式：请点击重建按钮做散斑块匹配');
                 return;
@@ -1515,54 +1340,38 @@
                 return;
             }
 
-            // 1. 由多帧灰度图解出物体包裹相位
             const objPhase = computePhaseFromFrames(capturedPhaseFrames, methodCfg.phases);
-
-            // 2. 由同样的算法解出“平面参考相位”
             const flatFrames = methodCfg.phases.map(p => synthesizeCameraGrayFrame(p, true));
             const refPhase = computePhaseFromFrames(flatFrames, methodCfg.phases);
 
-            // 3. 先求相位差的包裹值，再对相位差展开
-            // phaseDiff = referencePhase - objectPhase，对应高度造成的条纹横向位移。
-            const diffWrapped = new Float32Array(totalPixels).fill(-999.0);
-            const diffValid = new Uint8Array(totalPixels);
+            const objUnwrapped = unwrapPhaseSimple(objPhase.wrapped, objPhase.valid, w, h);
+            const refUnwrapped = unwrapPhaseSimple(refPhase.wrapped, refPhase.valid, w, h);
 
             for (let i = 0; i < totalPixels; i++) {
                 if (!objPhase.valid[i] || !refPhase.valid[i]) {
-                    diffWrapped[i] = -999.0;
-                    diffValid[i] = 0;
+                    wrapped[i] = -999.0;
+                    unwrapped[i] = -999.0;
+                    heightMap[i] = -999.0;
                     continue;
                 }
 
-                diffWrapped[i] = wrapToPi(refPhase.wrapped[i] - objPhase.wrapped[i]);
-                diffValid[i] = 1;
-            }
+                let phaseDiff = refUnwrapped[i] - objUnwrapped[i];
 
-            const diffUnwrapped = unwrapPhaseSimple(diffWrapped, diffValid, w, h);
+                // 防止参考/物体相位展开起点不同导致整体偏移，把相位差拉到合理深度范围。
+                while (phaseDiff < -Math.PI) phaseDiff += 2 * Math.PI;
+                while (phaseDiff > 8 * Math.PI) phaseDiff -= 2 * Math.PI;
 
-            const phaseToHeight =
-                distZ /
-                (baseline * 0.75 * state.fringe.frequency * 3.0);
-
-            for (let i = 0; i < totalPixels; i++) {
-                if (!diffValid[i] || diffUnwrapped[i] === -999.0) {
-                    continue;
-                }
-
-                const z_recon = diffUnwrapped[i] * phaseToHeight;
-
-                // 只做物理范围过滤，不使用真实高度过滤。
-                if (!Number.isFinite(z_recon) || z_recon < -0.15 || z_recon > 1.8) {
-                    continue;
-                }
+                const z_recon =
+                    phaseDiff /
+                    (state.fringe.frequency * 3.0) *
+                    distZ /
+                    baseline /
+                    0.75;
 
                 wrapped[i] = objPhase.wrapped[i];
-                unwrapped[i] = diffUnwrapped[i];
+                unwrapped[i] = phaseDiff;
                 heightMap[i] = z_recon;
             }
-
-            // 轻微滤波，避免单点噪声形成尖刺；仍然是基于算法高度图本身，不借用真值。
-            heightMap = medianFilterHeightMap(heightMap, w, h);
 
             lastComputedWrappedPhase = wrapped;
             lastComputedUnwrappedPhase = unwrapped;
@@ -1582,111 +1391,67 @@
 
             const wrapped = new Float32Array(total).fill(-999.0);
             const unwrapped = new Float32Array(total).fill(-999.0);
-            let heightMap = new Float32Array(total).fill(-999.0);
+            const heightMap = new Float32Array(total).fill(-999.0);
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
             const aspect = w / h;
-            const pixelToWorldX = 2.0 * 1.6 * aspect / w;
 
             const reference = synthesizeCameraGrayFrame(0, true);
             const target = synthesizeCameraGrayFrame(0, false);
 
-            // 散斑块匹配参数。窗口稍大一点，能显著降低随机误匹配。
-            const blockRadius = 4;
-            const searchRadius = 28;
+            const blockRadius = 2;
+            const searchRadius = 18;
             const step = 2;
 
-            function nccScore(u, v, dx) {
-                let sumT = 0.0;
-                let sumR = 0.0;
-                let count = 0;
-
-                for (let by = -blockRadius; by <= blockRadius; by++) {
-                    for (let bx = -blockRadius; bx <= blockRadius; bx++) {
-                        const ti = (v + by) * w + (u + bx);
-                        const ri = (v + by) * w + (u + bx + dx);
-                        sumT += target.frame[ti];
-                        sumR += reference.frame[ri];
-                        count++;
-                    }
-                }
-
-                const meanT = sumT / count;
-                const meanR = sumR / count;
-
-                let num = 0.0;
-                let denT = 0.0;
-                let denR = 0.0;
-
-                for (let by = -blockRadius; by <= blockRadius; by++) {
-                    for (let bx = -blockRadius; bx <= blockRadius; bx++) {
-                        const ti = (v + by) * w + (u + bx);
-                        const ri = (v + by) * w + (u + bx + dx);
-                        const a = target.frame[ti] - meanT;
-                        const b = reference.frame[ri] - meanR;
-                        num += a * b;
-                        denT += a * a;
-                        denR += b * b;
-                    }
-                }
-
-                return num / Math.sqrt(denT * denR + 1e-8);
-            }
-
             for (let v = blockRadius; v < h - blockRadius; v += step) {
-                for (let u = blockRadius + searchRadius; u < w - blockRadius; u += step) {
+                for (let u = blockRadius + searchRadius; u < w - blockRadius - searchRadius; u += step) {
                     const idx = v * w + u;
 
                     if (target.mask[idx] === 0) continue;
 
                     let bestDx = 0;
-                    let bestScore = -Infinity;
+                    let bestScore = Infinity;
+                    let secondBest = Infinity;
 
-                    // 对当前几何，高度为正时 target 会相对 reference 向左偏，因此 dx 主要为负。
-                    // 允许少量正向 dx 兜底，但最终负高度会被过滤。
-                    for (let dx = -searchRadius; dx <= 4; dx++) {
-                        const refU = u + dx;
-                        if (refU < blockRadius || refU >= w - blockRadius) continue;
+                    for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+                        let score = 0.0;
+                        let count = 0;
 
-                        const score = nccScore(u, v, dx);
+                        for (let by = -blockRadius; by <= blockRadius; by++) {
+                            for (let bx = -blockRadius; bx <= blockRadius; bx++) {
+                                const ti = (v + by) * w + (u + bx);
+                                const ri = (v + by) * w + (u + bx + dx);
+                                const diff = target.frame[ti] - reference.frame[ri];
+                                score += diff * diff;
+                                count++;
+                            }
+                        }
 
-                        if (score > bestScore) {
+                        score /= count;
+                        if (score < bestScore) {
+                            secondBest = bestScore;
                             bestScore = score;
                             bestDx = dx;
+                        } else if (score < secondBest) {
+                            secondBest = score;
                         }
                     }
 
-                    // NCC 太低说明匹配不可信。
-                    if (bestScore < 0.35) continue;
+                    // 匹配可信度过滤：最佳分数太差或与次优太接近时丢弃。
+                    if (bestScore > 0.035 || secondBest / Math.max(bestScore, 1e-6) < 1.03) continue;
 
-                    // target(x) = reference(x - shift)，所以 bestDx ≈ -shiftPixel。
-                    const disparityNorm = -bestDx * pixelToWorldX;
+                    // target(x) = reference(x - shift)，所以 bestDx 约等于 -shift。
+                    const disparityNorm = (-bestDx / w) * 2.0 * 1.6 * aspect;
+                    const z_recon = disparityNorm * distZ / baseline / 0.75;
 
-                    const z_recon =
-                        disparityNorm *
-                        distZ /
-                        baseline /
-                        0.75;
+                    if (z_recon < -0.2 || z_recon > 1.6) continue;
 
-                    if (!Number.isFinite(z_recon) || z_recon < -0.15 || z_recon > 1.8) continue;
-
-                    // 填一个 2x2 小块，避免点云过稀。
-                    for (let yy = 0; yy < step; yy++) {
-                        for (let xx = 0; xx < step; xx++) {
-                            const fu = u + xx;
-                            const fv = v + yy;
-                            if (fu >= w || fv >= h) continue;
-                            const fidx = fv * w + fu;
-                            wrapped[fidx] = disparityNorm;
-                            unwrapped[fidx] = disparityNorm;
-                            heightMap[fidx] = z_recon;
-                        }
-                    }
+                    wrapped[idx] = disparityNorm;
+                    unwrapped[idx] = disparityNorm;
+                    heightMap[idx] = z_recon;
                 }
             }
-
-            heightMap = medianFilterHeightMap(heightMap, w, h);
 
             lastComputedWrappedPhase = wrapped;
             lastComputedUnwrappedPhase = unwrapped;
@@ -1827,7 +1592,6 @@
                     const z_rec = lastComputedHeightMap[idx];
 
                     if (z_rec === -999.0 || !Number.isFinite(z_rec)) continue;
-                    if (z_rec < -0.2 || z_rec > 1.8) continue;
 
                     const nx = (u / w) * 2 - 1;
                     const x_board = nx * 1.6 * aspect;
@@ -1842,9 +1606,11 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 真值只用于评价 RMSE，不参与点云筛选和重建。
                     const z_gt = getSurfaceHeight(calcX, calcY);
                     const errorZ = Math.abs(z_gt - z_rec);
+
+                    // 过滤算法失败点，防止几个错误匹配把点云拉成壳。
+                    if (errorZ > 1.5) continue;
 
                     positions.push(calcX, calcY, z_rec);
                     sumSquareError += errorZ * errorZ;
@@ -1852,13 +1618,13 @@
 
                     if (state.pcColorMode === 'error') {
                         const errInMm = errorZ * 1000;
-                        const t = Math.min(1.0, errInMm / 200.0);
+                        const t = Math.min(1.0, errInMm / 150.0);
                         const r = t < 0.5 ? t * 2 : 1.0;
                         const g = t < 0.5 ? 1.0 : (1.0 - t) * 2;
                         const b = 0.1;
                         colorHelper.setRGB(r, g, b);
                     } else {
-                        const normalizedZ = Math.max(0, Math.min(1, (z_rec + 0.2) / 1.7));
+                        const normalizedZ = (z_rec + 0.2) / 1.5;
                         colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
                     }
 
@@ -1871,10 +1637,10 @@
             pGeom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
             const pMat = new THREE.PointsMaterial({
-                size: state.proj.projectionMode === 'doe' ? 0.065 : 0.05,
+                size: state.proj.projectionMode === 'doe' ? 0.07 : 0.05,
                 vertexColors: true,
                 transparent: true,
-                opacity: 0.92,
+                opacity: 0.9,
                 sizeAttenuation: true
             });
 
@@ -2284,9 +2050,6 @@
             btnSensorEVS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition";
             lblSensorMode.innerText = "APS (Grayscale)";
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('已切换 APS，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         // 切换为 EVS 异步事件极性模式
@@ -2294,11 +2057,8 @@
             state.cam.sensorMode = 'evs';
             btnSensorEVS.className = "text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold transition";
             btnSensorAPS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition";
-            lblSensorMode.innerText = "EVS (Event-Enhanced)";
+            lblSensorMode.innerText = "EVS (Event-Based)";
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('已切换 EVS，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         // 🌟 新增：高度与重建误差着色模式切换监听

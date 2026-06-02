@@ -1157,58 +1157,39 @@
             const pixIdx = (v % 256) * 256 + (u % 256);
 
             if (state.cam.sensorMode === 'evs') {
-                // EVS / 事件增强模式。
-                // 这版让照度真正进入算法帧：低照度时事件置信度下降、阈值量化和背景活动噪声增加，
-                // 因此 1 Lux 和 100 Lux 的 RMSE 不会再几乎一样。
-                const eps = 0.01;
+                // EVS / 事件增强模式：真实 EVS 输出 log(I) 变化事件。
+                // 为了兼容现有相移和散斑算法，这里模拟“事件增强重建灰度”。
+                const eps = 0.015;
 
-                const logI = Math.log(rawIntensity * luxNorm + eps);
-                const logPrev = Math.log(prevIntensity * luxNorm + eps);
+                const logI = Math.log(rawIntensity + eps);
+                const logPrev = Math.log(prevIntensity + eps);
                 const dLog = logI - logPrev;
 
-                // 低照度下事件阈值更难触发。
-                const eventThreshold = 0.025 + 0.12 * Math.pow(1.0 - luxNorm, 1.4);
-                const eventStrength = Math.abs(dLog);
-                const eventConfidence = Math.max(
-                    0.0,
-                    Math.min(1.0, (eventStrength - eventThreshold) / (eventThreshold * 2.5))
-                );
+                // 低照度下事件阈值更高，高照度下更灵敏。
+                const eventThreshold = 0.035 + 0.06 * (1.0 - luxNorm);
+                const eventConfidence = Math.min(1.0, Math.abs(dLog) / eventThreshold);
 
-                // 基础灰度保留 log 响应，但不再完全消除照度影响。
                 const logMin = Math.log(eps);
                 const logMax = Math.log(1.0 + eps);
-                let measured = (Math.log(rawIntensity * luxNorm + eps) - logMin) / (logMax - logMin);
+                let measured = (logI - logMin) / (logMax - logMin);
 
-                // 低照度下，事件重建灰度对比度下降。
-                const contrastKeep = 0.45 + 0.55 * Math.sqrt(luxNorm);
-                measured = 0.5 + (measured - 0.5) * contrastKeep;
+                // EVS 低照度读出噪声增长较慢，但有事件阈值量化误差。
+                const evsNoiseAmp = 0.006 + 0.018 * Math.pow(1.0 - luxNorm, 1.2);
+                const quantNoiseAmp = 0.012 * (1.0 - eventConfidence);
 
-                // 事件置信度低时，向中性灰度回退。
-                measured = measured * (0.55 + 0.45 * eventConfidence) + 0.5 * (1.0 - eventConfidence) * 0.45;
+                measured += (Math.random() * 2 - 1) * evsNoiseAmp;
+                measured += (Math.random() * 2 - 1) * quantNoiseAmp;
 
-                // EVS 低照度噪声：比 APS 小，但不是没有。
-                const evsTemporalNoise = 0.010 + 0.055 * Math.pow(1.0 - luxNorm, 1.25);
-
-                // 背景活动噪声，低照度更明显。
-                const backgroundActivityNoise = 0.008 + 0.040 * Math.pow(1.0 - luxNorm, 1.6);
-
-                // 事件阈值量化误差，事件越弱越大。
-                const thresholdQuantNoise = 0.006 + 0.045 * (1.0 - eventConfidence);
-
-                measured += (Math.random() * 2 - 1) * evsTemporalNoise;
-                measured += (Math.random() * 2 - 1) * backgroundActivityNoise;
-                measured += (Math.random() * 2 - 1) * thresholdQuantNoise;
-
-                // EVS 的 FPN 较弱，但不是没有。
-                measured += rowNoisePattern[rowIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += colNoisePattern[colIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += pixelUniformityPattern[pixIdx] * (0.003 + 0.006 * (1.0 - luxNorm));
+                // EVS 固定模式噪声较弱。
+                measured += rowNoisePattern[rowIdx] * 0.004;
+                measured += colNoisePattern[colIdx] * 0.004;
+                measured += pixelUniformityPattern[pixIdx] * 0.003;
 
                 return clamp01(measured);
             }
 
             // APS 普通灰度模式：低照度下读出噪声、shot noise、FPN 都更明显。
-            let measured = rawIntensity * (0.25 + 0.75 * luxNorm);
+            let measured = rawIntensity;
 
             const readNoiseAmp = 0.006 + 0.075 * Math.pow(1.0 - luxNorm, 1.7);
             const shotNoiseAmp = 0.006 + 0.045 * Math.sqrt(Math.max(0, rawIntensity)) * Math.pow(1.0 - luxNorm, 1.2);

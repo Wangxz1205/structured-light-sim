@@ -546,14 +546,14 @@
 
 
         // 🌟 新增：根据 mono COB 评测表预生成一维 Row / Col 空间固定模式噪声 (FPN) 纹理
-        const rowNoisePattern = new Float32Array(256);
-        const colNoisePattern = new Float32Array(256);
-        const pixelUniformityPattern = new Float32Array(256 * 256);
-        for (let i = 0; i < 256; i++) {
+        const rowNoisePattern = new Float32Array(512);
+        const colNoisePattern = new Float32Array(512);
+        const pixelUniformityPattern = new Float32Array(320 * 240);
+        for (let i = 0; i < 512; i++) {
             rowNoisePattern[i] = (Math.random() * 2 - 1);
             colNoisePattern[i] = (Math.random() * 2 - 1);
         }
-        for (let i = 0; i < 256 * 256; i++) {
+        for (let i = 0; i < 320 * 240; i++) {
             pixelUniformityPattern[i] = (Math.random() * 2 - 1);
         }
 
@@ -941,42 +941,90 @@
             return false; // 光路畅通
         }
 
-        // ------------------ 6.1 DOE 简化散斑图案生成函数 ------------------
-        // 说明：这里保留“伪随机散斑”模型，不再使用刚才的 VCSEL/DOE 相干干涉叠加模型。
-        // 后面的散斑深度不再直接用真实高度，而是用 reference/target 两张散斑图做块匹配求视差。
-        function hash2D(x, y) {
-            const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
-            return s - Math.floor(s);
+        // ------------------ 6.1 DOE 散斑图案生成函数 ------------------
+        // ------------------ 6.1 VCSEL + DOE 相干散斑近似光学模型 ------------------
+
+        // 固定 DOE 衍射级次，避免每帧随机变化
+        const doeOrders = [];
+        const DOE_ORDER_COUNT = 48;
+
+        for (let i = 0; i < DOE_ORDER_COUNT; i++) {
+            // 用黄金角生成较均匀的衍射方向
+            const angle = i * 2.399963229728653;
+            const radius = 0.35 + 0.65 * ((i * 37) % DOE_ORDER_COUNT) / DOE_ORDER_COUNT;
+
+            doeOrders.push({
+                kx: Math.cos(angle) * radius,
+                ky: Math.sin(angle) * radius,
+                phase: ((i * 91.7) % 360) * Math.PI / 180,
+                amp: 0.65 + 0.35 * Math.sin(i * 12.9898)
+            });
         }
 
-        function smoothstep(edge0, edge1, x) {
-            const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-            return t * t * (3 - 2 * t);
+        // VCSEL 阵列子光源，模拟多发射孔径
+        const vcselEmitters = [
+            { x: -0.018, y: -0.018, phase: 0.0 },
+            { x: 0.018, y: -0.018, phase: 1.7 },
+            { x: -0.018, y: 0.018, phase: 2.4 },
+            { x: 0.018, y: 0.018, phase: 3.1 }
+        ];
+
+        function gaussianEnvelope(x, y, sigma) {
+            return Math.exp(-(x * x + y * y) / (2.0 * sigma * sigma));
         }
 
-        function doeSpeckleIntensity(x, y) {
-            const scale = 32.0;
+        function vcselDoeSpeckleIntensity(x, y, defocusAmount = 0.0) {
+            // spatialScale 越大，散斑越密
+            const spatialScale = 38.0;
 
-            const gx = Math.floor(x * scale);
-            const gy = Math.floor(y * scale);
-            const fx = x * scale - gx;
-            const fy = y * scale - gy;
+            // 离焦会降低高频细节
+            const defocusBlur = Math.max(0.0, Math.min(1.0, defocusAmount));
+            const effectiveScale = spatialScale * (1.0 - 0.45 * defocusBlur);
 
-            const a = hash2D(gx, gy);
-            const b = hash2D(gx + 1, gy);
-            const c = hash2D(gx, gy + 1);
-            const d = hash2D(gx + 1, gy + 1);
+            let real = 0.0;
+            let imag = 0.0;
 
-            const ux = smoothstep(0, 1, fx);
-            const uy = smoothstep(0, 1, fy);
+            for (let e = 0; e < vcselEmitters.length; e++) {
+                const emitter = vcselEmitters[e];
 
-            const v1 = a * (1 - ux) + b * ux;
-            const v2 = c * (1 - ux) + d * ux;
-            const noise = v1 * (1 - uy) + v2 * uy;
+                for (let i = 0; i < doeOrders.length; i++) {
+                    const o = doeOrders[i];
 
-            // 阈值化后形成亮散斑 + 暗背景
-            return noise > 0.62 ? 1.0 : noise * 0.45;
+                    // 近似 DOE 衍射级次相干叠加
+                    const px = (x + emitter.x) * effectiveScale;
+                    const py = (y + emitter.y) * effectiveScale;
+
+                    const phase =
+                        o.kx * px +
+                        o.ky * py +
+                        o.phase +
+                        emitter.phase;
+
+                    const amp = o.amp / Math.sqrt(doeOrders.length * vcselEmitters.length);
+
+                    real += amp * Math.cos(phase);
+                    imag += amp * Math.sin(phase);
+                }
+            }
+
+            // 相干光强 I = |E|^2
+            let intensity = real * real + imag * imag;
+
+            // VCSEL 光斑包络：中心亮、边缘暗
+            const envelope = gaussianEnvelope(x, y, 1.8);
+            intensity *= envelope;
+
+            // 对比度压缩，避免全黑/全白
+            intensity = 1.0 - Math.exp(-2.8 * intensity);
+
+            // 归一化到 0~1
+            intensity = Math.max(0, Math.min(1, intensity));
+
+            return intensity;
         }
+
+
+
 
 
         function drawCameraCCDView(currentPhase) {
@@ -1053,7 +1101,15 @@
                     let fringeValPrev;
 
                     if (state.proj.projectionMode === 'doe') {
-                        const speckle = doeSpeckleIntensity(projShiftX, calcY);
+                        // 根据物体高度模拟投影/相机离焦，越偏离焦平面越模糊
+                        let defocusAmount = 0.0;
+
+                        if (state.proj.lensDefocus) {
+                            const focusZ = 0.35;
+                            defocusAmount = Math.min(1.0, Math.abs(z_height - focusZ) / 0.8);
+                        }
+
+                        const speckle = vcselDoeSpeckleIntensity(projShiftX, calcY, defocusAmount);
 
                         // 转成 -1 ~ 1，兼容后面的 intensity = 0.5 + 0.5 * fringeVal
                         fringeVal = speckle * 2.0 - 1.0;
@@ -1141,102 +1197,31 @@
 
         let lastComputedWrappedPhase = null;
         let lastComputedUnwrappedPhase = null;
-        let lastComputedHeightMap = null;
+
+        // 算法输入缓存：保存真实“拍到”的图像帧，后续相位/视差从这些图像中估计
         let capturedPhaseFrames = [];
+        let capturedPhaseShifts = [];
+        let referenceSpeckleFrame = null;
+        let capturedSpeckleFrame = null;
 
-        function clamp01(x) {
-            return Math.max(0, Math.min(1, x));
-        }
+        function renderSyntheticRawFrame(currentPhase, options = {}) {
+            const mode = options.mode || state.proj.projectionMode;
+            const flatReference = !!options.flatReference;
 
-        // 统一相机测量模型：算法帧也必须经过 APS / EVS 模型，否则 EVS 只会影响显示，不会影响 RMSE。
-        function applyCameraSensorModel(rawIntensity, prevIntensity, u, v) {
-            const luxNorm = Math.max(0.01, state.cam.lux / 100.0);
-
-            const rowIdx = v % rowNoisePattern.length;
-            const colIdx = u % colNoisePattern.length;
-            const pixIdx = (v % 256) * 256 + (u % 256);
-
-            if (state.cam.sensorMode === 'evs') {
-                // EVS / 事件增强模式。
-                // 这版让照度真正进入算法帧：低照度时事件置信度下降、阈值量化和背景活动噪声增加，
-                // 因此 1 Lux 和 100 Lux 的 RMSE 不会再几乎一样。
-                const eps = 0.01;
-
-                const logI = Math.log(rawIntensity * luxNorm + eps);
-                const logPrev = Math.log(prevIntensity * luxNorm + eps);
-                const dLog = logI - logPrev;
-
-                // 低照度下事件阈值更难触发。
-                const eventThreshold = 0.025 + 0.12 * Math.pow(1.0 - luxNorm, 1.4);
-                const eventStrength = Math.abs(dLog);
-                const eventConfidence = Math.max(
-                    0.0,
-                    Math.min(1.0, (eventStrength - eventThreshold) / (eventThreshold * 2.5))
-                );
-
-                // 基础灰度保留 log 响应，但不再完全消除照度影响。
-                const logMin = Math.log(eps);
-                const logMax = Math.log(1.0 + eps);
-                let measured = (Math.log(rawIntensity * luxNorm + eps) - logMin) / (logMax - logMin);
-
-                // 低照度下，事件重建灰度对比度下降。
-                const contrastKeep = 0.45 + 0.55 * Math.sqrt(luxNorm);
-                measured = 0.5 + (measured - 0.5) * contrastKeep;
-
-                // 事件置信度低时，向中性灰度回退。
-                measured = measured * (0.55 + 0.45 * eventConfidence) + 0.5 * (1.0 - eventConfidence) * 0.45;
-
-                // EVS 低照度噪声：比 APS 小，但不是没有。
-                const evsTemporalNoise = 0.010 + 0.055 * Math.pow(1.0 - luxNorm, 1.25);
-
-                // 背景活动噪声，低照度更明显。
-                const backgroundActivityNoise = 0.008 + 0.040 * Math.pow(1.0 - luxNorm, 1.6);
-
-                // 事件阈值量化误差，事件越弱越大。
-                const thresholdQuantNoise = 0.006 + 0.045 * (1.0 - eventConfidence);
-
-                measured += (Math.random() * 2 - 1) * evsTemporalNoise;
-                measured += (Math.random() * 2 - 1) * backgroundActivityNoise;
-                measured += (Math.random() * 2 - 1) * thresholdQuantNoise;
-
-                // EVS 的 FPN 较弱，但不是没有。
-                measured += rowNoisePattern[rowIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += colNoisePattern[colIdx] * (0.004 + 0.010 * (1.0 - luxNorm));
-                measured += pixelUniformityPattern[pixIdx] * (0.003 + 0.006 * (1.0 - luxNorm));
-
-                return clamp01(measured);
-            }
-
-            // APS 普通灰度模式：低照度下读出噪声、shot noise、FPN 都更明显。
-            let measured = rawIntensity * (0.25 + 0.75 * luxNorm);
-
-            const readNoiseAmp = 0.006 + 0.075 * Math.pow(1.0 - luxNorm, 1.7);
-            const shotNoiseAmp = 0.006 + 0.045 * Math.sqrt(Math.max(0, rawIntensity)) * Math.pow(1.0 - luxNorm, 1.2);
-            const fpnAmp = 0.006 + 0.026 * (1.0 - luxNorm);
-
-            measured += (Math.random() * 2 - 1) * readNoiseAmp;
-            measured += (Math.random() * 2 - 1) * shotNoiseAmp;
-            measured += rowNoisePattern[rowIdx] * fpnAmp;
-            measured += colNoisePattern[colIdx] * fpnAmp;
-            measured += pixelUniformityPattern[pixIdx] * fpnAmp * 0.6;
-
-            return clamp01(measured);
-        }
-
-        // 生成一帧“相机灰度图”。注意：这一步是仿真相机成像；后面的相位/视差由算法从图像求出。
-        function synthesizeCameraGrayFrame(currentPhase, useFlatObject = false) {
             const w = 320;
             const h = 240;
             const frame = new Float32Array(w * h);
-            const mask = new Uint8Array(w * h);
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
             const aspect = w / h;
 
+            const lux = state.cam.lux;
+            const luxFactor = Math.max(0.08, (101 - lux) / 100);
+            const cameraNoise = 0.010 * luxFactor;
+
             for (let v = 0; v < h; v++) {
                 const ny = (v / h) * 2 - 1;
-
                 for (let u = 0; u < w; u++) {
                     const nx = (u / w) * 2 - 1;
                     const x_board = nx * 1.6 * aspect;
@@ -1244,7 +1229,6 @@
 
                     let calcX = x_board;
                     let calcY = y_board;
-
                     if (state.proj.lensDistortion) {
                         const r2 = x_board * x_board + y_board * y_board;
                         const k1 = 0.12;
@@ -1252,14 +1236,15 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    const z_height = useFlatObject ? 0.0 : getSurfaceHeight(calcX, calcY);
+                    const z_height = flatReference ? 0.0 : getSurfaceHeight(calcX, calcY);
                     const projShiftX = calcX - (z_height * (baseline / distZ)) * 0.75;
 
-                    let intensity;
-                    if (state.proj.projectionMode === 'doe') {
-                        intensity = doeSpeckleIntensity(projShiftX, calcY);
+                    let fringeVal;
+                    if (mode === 'doe') {
+                        const speckle = doeSpeckleIntensity(projShiftX, calcY);
+                        fringeVal = speckle * 2.0 - 1.0;
                     } else {
-                        let fringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + currentPhase);
+                        fringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + currentPhase);
 
                         if (state.proj.lensDefocus) {
                             const focusZ = 0.3;
@@ -1267,229 +1252,88 @@
                             const defocusContrast = Math.exp(-Math.pow(z_height - focusZ, 2) / w_defocus);
                             fringeVal *= defocusContrast;
                         }
-
-                        intensity = 0.5 + 0.5 * fringeVal;
                     }
 
-                    const idx = v * w + u;
-                    const isShadowed = useFlatObject ? false : checkShadowOcclusion(calcX, calcY, z_height);
+                    let intensity = 0.5 + 0.5 * fringeVal;
 
-                    if (isShadowed) {
-                        frame[idx] = 0.05;
-                        mask[idx] = 0;
-                    } else {
-                        let prevIntensity;
-
-                        if (state.proj.projectionMode === 'doe') {
-                            // DOE 散斑是静态图案，这里用微小坐标扰动模拟上一时刻/参考事件变化。
-                            prevIntensity = doeSpeckleIntensity(projShiftX + 0.015, calcY);
-                        } else {
-                            // 条纹相移时，EVS 参考上一相移帧。
-                            const prevPhase = currentPhase - 0.12;
-                            let prevFringeVal = Math.cos(projShiftX * state.fringe.frequency * 3.0 + prevPhase);
-
-                            if (state.proj.lensDefocus) {
-                                const focusZ = 0.3;
-                                const w_defocus = 0.15;
-                                const defocusContrast = Math.exp(-Math.pow(z_height - focusZ, 2) / w_defocus);
-                                prevFringeVal *= defocusContrast;
-                            }
-
-                            prevIntensity = 0.5 + 0.5 * prevFringeVal;
-                        }
-
-                        frame[idx] = applyCameraSensorModel(intensity, prevIntensity, u, v);
-                        mask[idx] = 1;
-
-                        // 极低照度 APS 下，模拟部分像素信噪比过低导致无效。
-                        if (state.cam.sensorMode === 'aps' && state.cam.lux < 8) {
-                            const dropProb = (8 - state.cam.lux) / 8 * 0.12;
-                            if (Math.random() < dropProb) {
-                                mask[idx] = 0;
-                                frame[idx] = 0.02;
-                            }
-                        }
-                    }
-                }
-            }
-
-            return { frame, mask, width: w, height: h };
-        }
-
-        function wrapToPi(a) {
-            return Math.atan2(Math.sin(a), Math.cos(a));
-        }
-
-        // N 步相移算法：由多帧灰度 I_k 反算包裹相位。
-        function computePhaseFromFrames(frames, phases) {
-            const w = 320;
-            const h = 240;
-            const total = w * h;
-            const wrapped = new Float32Array(total);
-            const valid = new Uint8Array(total);
-
-            for (let i = 0; i < total; i++) {
-                let sinSum = 0.0;
-                let cosSum = 0.0;
-                let ok = 1;
-                let contrastMin = 1.0;
-                let contrastMax = 0.0;
-
-                for (let k = 0; k < frames.length; k++) {
-                    if (frames[k].mask[i] === 0) {
-                        ok = 0;
-                        break;
+                    if (!flatReference && checkShadowOcclusion(calcX, calcY, z_height)) {
+                        intensity = 0.05;
                     }
 
-                    const I = frames[k].frame[i];
-                    contrastMin = Math.min(contrastMin, I);
-                    contrastMax = Math.max(contrastMax, I);
-                    sinSum += I * Math.sin(phases[k]);
-                    cosSum += I * Math.cos(phases[k]);
-                }
+                    intensity *= (1.0 + pixelUniformityPattern[v * w + u] * 0.02);
+                    intensity += rowNoisePattern[v] * 0.004;
+                    intensity += colNoisePattern[u] * 0.004;
+                    intensity += (Math.random() * 2 - 1) * cameraNoise;
 
-                if (!ok || contrastMax - contrastMin < 0.04) {
-                    wrapped[i] = -999.0;
-                    valid[i] = 0;
-                } else {
-                    // 对 I = A + B cos(phi + delta) 的 N 步解相
-                    wrapped[i] = Math.atan2(-sinSum, cosSum);
-                    valid[i] = 1;
+                    frame[v * w + u] = Math.max(0, Math.min(1, intensity));
                 }
             }
 
-            return { wrapped, valid, width: w, height: h };
+            return frame;
         }
 
-        // 质量引导二维相位展开：从图像边界的平面区域开始，逐步传播相位差。
-        // 这比“逐行展开”稳定，能避免点云被 2π 跳变撕裂成壳。
-        function unwrapPhaseSimple(wrapped, valid, w, h) {
-            const total = w * h;
-            const unwrapped = new Float32Array(total);
-            const visited = new Uint8Array(total);
-            const queue = [];
+        function capturePhaseFrame(phase) {
+            const frame = renderSyntheticRawFrame(phase, { mode: 'fringe' });
+            capturedPhaseFrames.push(frame);
+            capturedPhaseShifts.push(phase);
+            return frame;
+        }
 
-            for (let i = 0; i < total; i++) {
-                unwrapped[i] = -999.0;
-            }
+        function captureDoeSpecklePair() {
+            referenceSpeckleFrame = renderSyntheticRawFrame(0, { mode: 'doe', flatReference: true });
+            capturedSpeckleFrame = renderSyntheticRawFrame(0, { mode: 'doe', flatReference: false });
+            return { referenceSpeckleFrame, capturedSpeckleFrame };
+        }
 
-            function pushSeed(idx) {
-                if (valid[idx] && !visited[idx] && wrapped[idx] !== -999.0) {
-                    visited[idx] = 1;
-                    unwrapped[idx] = wrapped[idx];
-                    queue.push(idx);
-                }
-            }
+        function estimateDoeDisparityAt(u, v, w, h) {
+            if (!referenceSpeckleFrame || !capturedSpeckleFrame) return -999.0;
 
-            // 从四周边界开始。边界通常是背景平板，真实相位差接近 0，是最稳的展开起点。
-            for (let u = 0; u < w; u++) {
-                pushSeed(u);
-                pushSeed((h - 1) * w + u);
-            }
-            for (let v = 0; v < h; v++) {
-                pushSeed(v * w);
-                pushSeed(v * w + (w - 1));
-            }
+            const wx = 3;
+            const wy = 2;
+            const minShiftPx = -20;
+            const maxShiftPx = 90;
+            let bestScore = Infinity;
+            let bestShiftPx = 0;
 
-            // 如果边界全被遮挡，则从中心附近找一个有效点兜底。
-            if (queue.length === 0) {
-                const cx = Math.floor(w / 2);
-                const cy = Math.floor(h / 2);
-                let bestIdx = -1;
-                let bestDist = Infinity;
+            for (let shift = minShiftPx; shift <= maxShiftPx; shift += 1) {
+                let score = 0.0;
+                let count = 0;
 
-                for (let v = 0; v < h; v++) {
-                    for (let u = 0; u < w; u++) {
-                        const idx = v * w + u;
-                        if (!valid[idx] || wrapped[idx] === -999.0) continue;
-                        const d = (u - cx) * (u - cx) + (v - cy) * (v - cy);
-                        if (d < bestDist) {
-                            bestDist = d;
-                            bestIdx = idx;
-                        }
+                for (let dy = -wy; dy <= wy; dy++) {
+                    const yy = v + dy;
+                    if (yy < 0 || yy >= h) continue;
+
+                    for (let dx = -wx; dx <= wx; dx++) {
+                        const xCap = u + dx;
+                        const xRef = u + dx - shift;
+                        if (xCap < 0 || xCap >= w || xRef < 0 || xRef >= w) continue;
+
+                        const diff = capturedSpeckleFrame[yy * w + xCap] - referenceSpeckleFrame[yy * w + xRef];
+                        score += diff * diff;
+                        count++;
                     }
                 }
 
-                if (bestIdx >= 0) pushSeed(bestIdx);
-            }
-
-            const offsets = [1, -1, w, -w];
-
-            while (queue.length > 0) {
-                const idx = queue.shift();
-                const u = idx % w;
-
-                for (let k = 0; k < offsets.length; k++) {
-                    const nidx = idx + offsets[k];
-
-                    if (nidx < 0 || nidx >= total) continue;
-                    if ((offsets[k] === 1 && u === w - 1) || (offsets[k] === -1 && u === 0)) continue;
-                    if (!valid[nidx] || visited[nidx] || wrapped[nidx] === -999.0) continue;
-
-                    const localDiff = wrapToPi(wrapped[nidx] - wrapped[idx]);
-                    unwrapped[nidx] = unwrapped[idx] + localDiff;
-                    visited[nidx] = 1;
-                    queue.push(nidx);
+                if (count > 0) score /= count;
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestShiftPx = shift;
                 }
             }
 
-            return unwrapped;
+            // 置信度过低或匹配到边界时判为无效
+            if (!isFinite(bestScore) || bestScore > 0.035) return -999.0;
+
+            const viewHalfX = 1.6 * (w / h);
+            const shiftWorld = bestShiftPx * (2.0 * viewHalfX / w);
+
+            // drawCameraCCDView 中散斑位移使用了 0.75 系数，这里把它还原为 disparity = z * B / Z
+            return shiftWorld / 0.75;
         }
 
-        // 对高度图做一次小窗口中值滤波，去掉孤立误匹配点，避免点云出现尖刺。
-        function medianFilterHeightMap(heightMap, w, h) {
-            const out = new Float32Array(heightMap.length);
-            const vals = [];
-
-            for (let v = 0; v < h; v++) {
-                for (let u = 0; u < w; u++) {
-                    const idx = v * w + u;
-                    vals.length = 0;
-
-                    for (let dy = -1; dy <= 1; dy++) {
-                        for (let dx = -1; dx <= 1; dx++) {
-                            const x = u + dx;
-                            const y = v + dy;
-                            if (x < 0 || x >= w || y < 0 || y >= h) continue;
-                            const val = heightMap[y * w + x];
-                            if (val !== -999.0 && Number.isFinite(val)) vals.push(val);
-                        }
-                    }
-
-                    if (vals.length < 3) {
-                        out[idx] = heightMap[idx];
-                    } else {
-                        vals.sort((a, b) => a - b);
-                        out[idx] = vals[Math.floor(vals.length / 2)];
-                    }
-                }
-            }
-
-            return out;
-        }
-
-        function clearAlgorithmOutputs(message = '请点击按钮采集并重建') {
-            phaseCanvas.width = 320;
-            phaseCanvas.height = 240;
-            const total = phaseCanvas.width * phaseCanvas.height;
-            lastComputedWrappedPhase = new Float32Array(total).fill(-999.0);
-            lastComputedUnwrappedPhase = new Float32Array(total).fill(-999.0);
-            lastComputedHeightMap = new Float32Array(total).fill(-999.0);
-            pCtx.fillStyle = '#000000';
-            pCtx.fillRect(0, 0, phaseCanvas.width, phaseCanvas.height);
-            document.getElementById('lblPhaseState').innerText = message;
-
-            if (reconstructedPointsMesh) {
-                pcScene.remove(reconstructedPointsMesh);
-                reconstructedPointsMesh = null;
-            }
-            document.getElementById('lblPointCount').innerText = 'Points: 0';
-            document.getElementById('lblRMSE').innerText = 'RMSE: --';
-        }
-
-        // DLP 条纹：真正从采集到的多帧灰度图中解相，再由“参考相位 - 物体相位”的相位差反推高度。
-        // 关键修正：只展开“相位差”，不要分别展开参考相位和物体相位，否则 2π 分支不同会把点云撕裂成壳。
         function calculatePhaseAndUnwrap() {
+            const methodCfg = getActivePhaseMethodConfig();
+
             phaseCanvas.width = 320;
             phaseCanvas.height = 240;
 
@@ -1497,204 +1341,106 @@
             const h = phaseCanvas.height;
             const totalPixels = w * h;
 
-            const wrapped = new Float32Array(totalPixels).fill(-999.0);
-            const unwrapped = new Float32Array(totalPixels).fill(-999.0);
-            let heightMap = new Float32Array(totalPixels).fill(-999.0);
-
-            const baseline = state.cam.x - state.proj.x;
-            const distZ = state.board.z;
-
-            if (state.proj.projectionMode === 'doe') {
-                clearAlgorithmOutputs('DOE 模式：请点击重建按钮做散斑块匹配');
-                return;
-            }
-
-            const methodCfg = getActivePhaseMethodConfig();
-            if (!capturedPhaseFrames || capturedPhaseFrames.length !== methodCfg.phases.length) {
-                clearAlgorithmOutputs('条纹模式：请点击重建按钮采集多步相移帧');
-                return;
-            }
-
-            // 1. 由多帧灰度图解出物体包裹相位
-            const objPhase = computePhaseFromFrames(capturedPhaseFrames, methodCfg.phases);
-
-            // 2. 由同样的算法解出“平面参考相位”
-            const flatFrames = methodCfg.phases.map(p => synthesizeCameraGrayFrame(p, true));
-            const refPhase = computePhaseFromFrames(flatFrames, methodCfg.phases);
-
-            // 3. 先求相位差的包裹值，再对相位差展开
-            // phaseDiff = referencePhase - objectPhase，对应高度造成的条纹横向位移。
-            const diffWrapped = new Float32Array(totalPixels).fill(-999.0);
-            const diffValid = new Uint8Array(totalPixels);
-
-            for (let i = 0; i < totalPixels; i++) {
-                if (!objPhase.valid[i] || !refPhase.valid[i]) {
-                    diffWrapped[i] = -999.0;
-                    diffValid[i] = 0;
-                    continue;
-                }
-
-                diffWrapped[i] = wrapToPi(refPhase.wrapped[i] - objPhase.wrapped[i]);
-                diffValid[i] = 1;
-            }
-
-            const diffUnwrapped = unwrapPhaseSimple(diffWrapped, diffValid, w, h);
-
-            const phaseToHeight =
-                distZ /
-                (baseline * 0.75 * state.fringe.frequency * 3.0);
-
-            for (let i = 0; i < totalPixels; i++) {
-                if (!diffValid[i] || diffUnwrapped[i] === -999.0) {
-                    continue;
-                }
-
-                const z_recon = diffUnwrapped[i] * phaseToHeight;
-
-                // 只做物理范围过滤，不使用真实高度过滤。
-                if (!Number.isFinite(z_recon) || z_recon < -0.15 || z_recon > 1.8) {
-                    continue;
-                }
-
-                wrapped[i] = objPhase.wrapped[i];
-                unwrapped[i] = diffUnwrapped[i];
-                heightMap[i] = z_recon;
-            }
-
-            // 轻微滤波，避免单点噪声形成尖刺；仍然是基于算法高度图本身，不借用真值。
-            heightMap = medianFilterHeightMap(heightMap, w, h);
-
-            lastComputedWrappedPhase = wrapped;
-            lastComputedUnwrappedPhase = unwrapped;
-            lastComputedHeightMap = heightMap;
-
-            renderPhaseCanvas();
-        }
-
-        // DOE 散斑：用参考散斑图与物体散斑图做块匹配，求横向视差，再反推高度。
-        function computeDOEDisparityByBlockMatching() {
-            phaseCanvas.width = 320;
-            phaseCanvas.height = 240;
-
-            const w = phaseCanvas.width;
-            const h = phaseCanvas.height;
-            const total = w * h;
-
-            const wrapped = new Float32Array(total).fill(-999.0);
-            const unwrapped = new Float32Array(total).fill(-999.0);
-            let heightMap = new Float32Array(total).fill(-999.0);
+            const wrapped = new Float32Array(totalPixels);
+            const unwrapped = new Float32Array(totalPixels);
 
             const baseline = state.cam.x - state.proj.x;
             const distZ = state.board.z;
             const aspect = w / h;
-            const pixelToWorldX = 2.0 * 1.6 * aspect / w;
+            const k = state.fringe.frequency * 3.0;
 
-            const reference = synthesizeCameraGrayFrame(0, true);
-            const target = synthesizeCameraGrayFrame(0, false);
-
-            // 散斑块匹配参数。窗口稍大一点，能显著降低随机误匹配。
-            const blockRadius = 4;
-            const searchRadius = 28;
-            const step = 2;
-
-            function nccScore(u, v, dx) {
-                let sumT = 0.0;
-                let sumR = 0.0;
-                let count = 0;
-
-                for (let by = -blockRadius; by <= blockRadius; by++) {
-                    for (let bx = -blockRadius; bx <= blockRadius; bx++) {
-                        const ti = (v + by) * w + (u + bx);
-                        const ri = (v + by) * w + (u + bx + dx);
-                        sumT += target.frame[ti];
-                        sumR += reference.frame[ri];
-                        count++;
-                    }
+            // 条纹模式：如果还没有真正采集帧，先按当前方法合成一次采集帧，避免初始化时报空。
+            // 后续点击“启动高精度点云重构”时会覆盖为真正的多步采集帧。
+            if (state.proj.projectionMode === 'fringe') {
+                if (capturedPhaseFrames.length !== methodCfg.phases.length) {
+                    capturedPhaseFrames = [];
+                    capturedPhaseShifts = [];
+                    methodCfg.phases.forEach(phase => capturePhaseFrame(phase));
                 }
-
-                const meanT = sumT / count;
-                const meanR = sumR / count;
-
-                let num = 0.0;
-                let denT = 0.0;
-                let denR = 0.0;
-
-                for (let by = -blockRadius; by <= blockRadius; by++) {
-                    for (let bx = -blockRadius; bx <= blockRadius; bx++) {
-                        const ti = (v + by) * w + (u + bx);
-                        const ri = (v + by) * w + (u + bx + dx);
-                        const a = target.frame[ti] - meanT;
-                        const b = reference.frame[ri] - meanR;
-                        num += a * b;
-                        denT += a * a;
-                        denR += b * b;
-                    }
+            } else {
+                // DOE 模式：必须先有参考散斑图和当前散斑图，才做块匹配。
+                if (!referenceSpeckleFrame || !capturedSpeckleFrame) {
+                    captureDoeSpecklePair();
                 }
-
-                return num / Math.sqrt(denT * denR + 1e-8);
             }
 
-            for (let v = blockRadius; v < h - blockRadius; v += step) {
-                for (let u = blockRadius + searchRadius; u < w - blockRadius; u += step) {
+            for (let v = 0; v < h; v++) {
+                const ny = (v / h) * 2 - 1;
+                for (let u = 0; u < w; u++) {
+                    const nx = (u / w) * 2 - 1;
+                    const x_board = nx * 1.6 * aspect;
+                    const y_board = -ny * 1.6;
+
+                    let calcX = x_board;
+                    let calcY = y_board;
+                    if (state.proj.lensDistortion) {
+                        const r2 = x_board * x_board + y_board * y_board;
+                        const k1 = 0.12;
+                        calcX = x_board * (1.0 + k1 * r2);
+                        calcY = y_board * (1.0 + k1 * r2);
+                    }
+
+                    const z_height = getSurfaceHeight(calcX, calcY);
                     const idx = v * w + u;
 
-                    if (target.mask[idx] === 0) continue;
+                    let wrappedValue;
+                    let absoluteValue;
 
-                    let bestDx = 0;
-                    let bestScore = -Infinity;
+                    if (state.proj.projectionMode === 'doe') {
+                        // 真正的算法路径：从 referenceSpeckleFrame 与 capturedSpeckleFrame 做局部块匹配得到视差。
+                        const disparity = estimateDoeDisparityAt(u, v, w, h);
 
-                    // 对当前几何，高度为正时 target 会相对 reference 向左偏，因此 dx 主要为负。
-                    // 允许少量正向 dx 兜底，但最终负高度会被过滤。
-                    for (let dx = -searchRadius; dx <= 4; dx++) {
-                        const refU = u + dx;
-                        if (refU < blockRadius || refU >= w - blockRadius) continue;
+                        if (disparity === -999.0) {
+                            wrappedValue = -999.0;
+                            absoluteValue = -999.0;
+                        } else {
+                            wrappedValue = disparity;
+                            absoluteValue = disparity;
+                        }
+                    } else {
+                        // 真正的算法路径：从 3/4/5 幅相移强度图像反算包裹相位。
+                        let c = 0.0;
+                        let s = 0.0;
+                        let meanI = 0.0;
 
-                        const score = nccScore(u, v, dx);
+                        for (let i = 0; i < capturedPhaseFrames.length; i++) {
+                            const I = capturedPhaseFrames[i][idx];
+                            const delta = capturedPhaseShifts[i];
+                            c += I * Math.cos(delta);
+                            s += I * Math.sin(delta);
+                            meanI += I;
+                        }
 
-                        if (score > bestScore) {
-                            bestScore = score;
-                            bestDx = dx;
+                        meanI /= Math.max(1, capturedPhaseFrames.length);
+                        const modulation = Math.sqrt(c * c + s * s) / Math.max(1, capturedPhaseFrames.length);
+
+                        if (meanI < 0.08 || modulation < 0.015) {
+                            wrappedValue = -999.0;
+                            absoluteValue = -999.0;
+                        } else {
+                            wrappedValue = Math.atan2(-s, c);
+
+                            // 相位展开：使用已标定的平面相位作为参考，把包裹相位提升到最接近平面相位的 2π 周期。
+                            const flatPhase = calcX * k;
+                            absoluteValue = wrappedValue + Math.round((flatPhase - wrappedValue) / (Math.PI * 2)) * Math.PI * 2;
                         }
                     }
 
-                    // NCC 太低说明匹配不可信。
-                    if (bestScore < 0.35) continue;
-
-                    // target(x) = reference(x - shift)，所以 bestDx ≈ -shiftPixel。
-                    const disparityNorm = -bestDx * pixelToWorldX;
-
-                    const z_recon =
-                        disparityNorm *
-                        distZ /
-                        baseline /
-                        0.75;
-
-                    if (!Number.isFinite(z_recon) || z_recon < -0.15 || z_recon > 1.8) continue;
-
-                    // 填一个 2x2 小块，避免点云过稀。
-                    for (let yy = 0; yy < step; yy++) {
-                        for (let xx = 0; xx < step; xx++) {
-                            const fu = u + xx;
-                            const fv = v + yy;
-                            if (fu >= w || fv >= h) continue;
-                            const fidx = fv * w + fu;
-                            wrapped[fidx] = disparityNorm;
-                            unwrapped[fidx] = disparityNorm;
-                            heightMap[fidx] = z_recon;
-                        }
+                    if (checkShadowOcclusion(calcX, calcY, z_height)) {
+                        wrappedValue = -999.0;
+                        absoluteValue = -999.0;
                     }
+
+                    wrapped[idx] = wrappedValue;
+                    unwrapped[idx] = absoluteValue;
                 }
             }
-
-            heightMap = medianFilterHeightMap(heightMap, w, h);
 
             lastComputedWrappedPhase = wrapped;
             lastComputedUnwrappedPhase = unwrapped;
-            lastComputedHeightMap = heightMap;
 
             renderPhaseCanvas();
         }
-
 
         function renderPhaseCanvas() {
             if (!lastComputedWrappedPhase) return;
@@ -1798,14 +1544,14 @@
         }
 
         function rebuild3DPointCloud() {
-            if (reconstructedPointsMesh) {
-                pcScene.remove(reconstructedPointsMesh);
-            }
-
-            if (!lastComputedHeightMap) {
+            if (!lastComputedUnwrappedPhase) {
                 document.getElementById('lblPointCount').innerText = 'Points: 0';
                 document.getElementById('lblRMSE').innerText = 'RMSE: --';
                 return;
+            }
+
+            if (reconstructedPointsMesh) {
+                pcScene.remove(reconstructedPointsMesh);
             }
 
             const w = phaseCanvas.width;
@@ -1814,25 +1560,33 @@
             const colors = [];
 
             const colorHelper = new THREE.Color();
+            const baseline = state.cam.x - state.proj.x;
+            const distZ = state.board.z;
             const aspect = w / h;
 
             let sumSquareError = 0;
             let activePointCount = 0;
 
+            const lux = state.cam.lux;
+            let noiseAmplitude = 0.0;
+            if (lux < 5) noiseAmplitude = 0.09 * (5 - lux) / 4;
+            else if (lux < 50) noiseAmplitude = 0.02 * (50 - lux) / 45;
+            else noiseAmplitude = 0.003;
+
             for (let v = 0; v < h; v += 1) {
                 const ny = (v / h) * 2 - 1;
-
                 for (let u = 0; u < w; u += 1) {
                     const idx = v * w + u;
-                    const z_rec = lastComputedHeightMap[idx];
+                    const absPhase = lastComputedUnwrappedPhase[idx];
 
-                    if (z_rec === -999.0 || !Number.isFinite(z_rec)) continue;
-                    if (z_rec < -0.2 || z_rec > 1.8) continue;
+                    if (absPhase === -999.0) continue;
 
                     const nx = (u / w) * 2 - 1;
+                    // 🌟 同步正向 nx 几何重建，彻底解决点云镜像反置
                     const x_board = nx * 1.6 * aspect;
                     const y_board = -ny * 1.6;
 
+                    // 考虑径向畸变
                     let calcX = x_board;
                     let calcY = y_board;
                     if (state.proj.lensDistortion) {
@@ -1842,26 +1596,57 @@
                         calcY = y_board * (1.0 + k1 * r2);
                     }
 
-                    // 真值只用于评价 RMSE，不参与点云筛选和重建。
+                    // 真实高度 Ground Truth
                     const z_gt = getSurfaceHeight(calcX, calcY);
-                    const errorZ = Math.abs(z_gt - z_rec);
+
+                    // 探测噪声：环境越暗，重建误差越大
+                    const reconstructionNoise = (Math.random() * 2 - 1) * noiseAmplitude * 1.5;
+
+                    let z_rec;
+
+                    if (state.proj.projectionMode === 'doe') {
+                        // DOE 模式：absPhase 实际存的是 disparity，不是相位
+                        const disparity = absPhase;
+
+                        // calculatePhaseAndUnwrap() 里定义：
+                        // disparity = z_height * baseline / distZ
+                        z_rec = disparity * distZ / baseline;
+                    } else {
+                        // DLP 条纹模式：absPhase 是绝对相位
+                        const idealPhaseAtFlatBoard = calcX * state.fringe.frequency * 3.0;
+                        const phaseDiff = idealPhaseAtFlatBoard - absPhase;
+
+                        // 对应：
+                        // projShiftX = calcX - (z_height * baseline / distZ) * 0.75
+                        z_rec =
+                            phaseDiff /
+                            (state.fringe.frequency * 3.0) *
+                            distZ /
+                            baseline /
+                            0.75;
+                    }
+
 
                     positions.push(calcX, calcY, z_rec);
+
+                    // 计算绝对深度重建误差：统一用 Ground Truth 对比
+                    const errorZ = Math.abs(z_gt - z_rec);
                     sumSquareError += errorZ * errorZ;
                     activePointCount++;
 
+                    // 着色模式控制
                     if (state.pcColorMode === 'error') {
                         const errInMm = errorZ * 1000;
-                        const t = Math.min(1.0, errInMm / 200.0);
+                        const t = Math.min(1.0, errInMm / 150.0);
+
                         const r = t < 0.5 ? t * 2 : 1.0;
                         const g = t < 0.5 ? 1.0 : (1.0 - t) * 2;
                         const b = 0.1;
                         colorHelper.setRGB(r, g, b);
                     } else {
-                        const normalizedZ = Math.max(0, Math.min(1, (z_rec + 0.2) / 1.7));
+                        const normalizedZ = (z_rec + 0.2) / 1.5;
                         colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
                     }
-
                     colors.push(colorHelper.r, colorHelper.g, colorHelper.b);
                 }
             }
@@ -1871,10 +1656,10 @@
             pGeom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
             const pMat = new THREE.PointsMaterial({
-                size: state.proj.projectionMode === 'doe' ? 0.065 : 0.05,
+                size: 0.05,
                 vertexColors: true,
                 transparent: true,
-                opacity: 0.92,
+                opacity: 0.9,
                 sizeAttenuation: true
             });
 
@@ -1882,8 +1667,9 @@
             pcScene.add(reconstructedPointsMesh);
 
             document.getElementById('lblPointCount').innerText = `Points: ${activePointCount}`;
+
             const rmse = activePointCount > 0 ? Math.sqrt(sumSquareError / activePointCount) : 0;
-            document.getElementById('lblRMSE').innerText = activePointCount > 0 ? `RMSE: ${(rmse * 1000).toFixed(2)} mm` : 'RMSE: --';
+            document.getElementById('lblRMSE').innerText = `RMSE: ${(rmse * 1000).toFixed(2)} mm`;
 
             updateColorbarUI();
         }
@@ -1960,27 +1746,58 @@
 
             updateProjectionModeButtons();
             updatePhaseButtonsForProjectionMode();
+
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            clearAlgorithmOutputs(mode === 'doe' ? 'DOE 模式：请点击重建按钮做散斑块匹配' : '条纹模式：请点击重建按钮采集多步相移帧');
+
+            // 切换模式时清空旧算法缓存，避免把上一种模式的相位/视差当成新结果。
+            capturedPhaseFrames = [];
+            capturedPhaseShifts = [];
+            referenceSpeckleFrame = null;
+            capturedSpeckleFrame = null;
+
+            if (mode === 'fringe') {
+                calculatePhaseAndUnwrap();
+                rebuild3DPointCloud();
+            } else {
+                lastComputedWrappedPhase = null;
+                lastComputedUnwrappedPhase = null;
+                pCtx.clearRect(0, 0, phaseCanvas.width, phaseCanvas.height);
+                document.getElementById('lblPhaseState').innerText = "DOE 散斑模式：点击按钮计算视差";
+
+                if (reconstructedPointsMesh) {
+                    pcScene.remove(reconstructedPointsMesh);
+                    reconstructedPointsMesh = null;
+                }
+                document.getElementById('lblPointCount').innerText = "Points: 0";
+                document.getElementById('lblRMSE').innerText = "RMSE: --";
+                markRecomputeNeeded();
+            }
 
             const modeName = mode === 'doe'
                 ? 'VCSEL + DOE 散斑模式'
                 : 'DLP 有源条纹模式';
 
-            showNotification('投影模式已切换', `当前模式：${modeName}，请点击重建按钮运行算法。`, 'success');
+            showNotification('投影模式已切换', `当前模式：${modeName}`, 'success');
         }
 
         function recomputeCurrentMode() {
+            updateProjectorMatrix();
+
             if (state.proj.projectionMode === 'doe') {
-                updateProjectorMatrix();
+                state.fringe.phase = 0;
+                captureDoeSpecklePair();
                 drawCameraCCDView(0);
-                computeDOEDisparityByBlockMatching();
-                rebuild3DPointCloud();
-                showNotification('散斑算法完成', '已通过 reference-target 块匹配求出视差并生成点云。', 'success');
             } else {
-                triggerFourStepPhaseAcquisition();
+                const methodCfg = getActivePhaseMethodConfig();
+                capturedPhaseFrames = [];
+                capturedPhaseShifts = [];
+                methodCfg.phases.forEach(phase => capturePhaseFrame(phase));
+                drawCameraCCDView(state.fringe.phase);
             }
+
+            calculatePhaseAndUnwrap();
+            rebuild3DPointCloud();
 
             const recomputeBtn = document.getElementById('btnRecomputeCurrent');
             if (recomputeBtn) {
@@ -1990,6 +1807,16 @@
                     `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 重新计算当前模式`;
                 lucide.createIcons();
             }
+
+            const modeName = state.proj.projectionMode === 'doe'
+                ? 'DOE 散斑块匹配重建'
+                : `${getActivePhaseMethodConfig().label} 相移图像解相重建`;
+
+            showNotification(
+                '重新计算完成',
+                `${modeName} 已根据当前投影仪、相机和物体参数更新。`,
+                'success'
+            );
         }
 
         function markRecomputeNeeded() {
@@ -2041,9 +1868,16 @@
 
         function setPhaseMethod(method) {
             state.phaseMethod = method;
-            capturedPhaseFrames = [];
             updatePhaseMethodButtons();
-            clearAlgorithmOutputs('条纹模式：相移步数已改变，请重新采集并重建');
+
+            if (state.proj.projectionMode === 'fringe') {
+                const methodCfg = getActivePhaseMethodConfig();
+                capturedPhaseFrames = [];
+                capturedPhaseShifts = [];
+                methodCfg.phases.forEach(phase => capturePhaseFrame(phase));
+                calculatePhaseAndUnwrap();
+                rebuild3DPointCloud();
+            }
         }
 
 
@@ -2056,39 +1890,47 @@
             if (isAcquiring) return;
             isAcquiring = true;
 
-            const runBtn = document.getElementById('btnRunReconstruction');
-
             if (state.proj.projectionMode === 'doe') {
+                const runBtn = document.getElementById('btnRunReconstruction');
+
                 runBtn.disabled = true;
-                runBtn.classList.add('opacity-50');
-                runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在执行 DOE 散斑块匹配...`;
+                runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在采集 DOE 散斑图...`;
                 lucide.createIcons();
 
                 state.fringe.phase = 0;
-                updateProjectorMatrix();
-                drawCameraCCDView(0);
 
-                await new Promise(res => setTimeout(res, 80));
-                computeDOEDisparityByBlockMatching();
+                updateProjectorMatrix();
+                captureDoeSpecklePair();
+                drawCameraCCDView(0);
+                calculatePhaseAndUnwrap();
                 rebuild3DPointCloud();
 
                 runBtn.disabled = false;
-                runBtn.classList.remove('opacity-50');
-                runBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-emerald-400"></i> DOE 点云重建已就绪`;
+                runBtn.innerHTML = `<i data-lucide="refresh-cw" class="w-4 h-4 animate-spin-slow"></i> 启动高精度点云重构`;
                 lucide.createIcons();
 
                 isAcquiring = false;
-                showNotification("散斑重建完成", "DOE 散斑已通过块匹配算法求出视差并生成点云。", "success");
+
+                showNotification(
+                    "散斑重建完成",
+                    "VCSEL + DOE 单帧散斑视差估计完成，3D 点云已更新。",
+                    "success"
+                );
+
                 return;
             }
 
+
+            const runBtn = document.getElementById('btnRunReconstruction');
             runBtn.disabled = true;
             runBtn.classList.add('opacity-50');
 
             const methodCfg = getActivePhaseMethodConfig();
             const phases = methodCfg.phases;
             const angleLabels = methodCfg.angleLabels;
+
             capturedPhaseFrames = [];
+            capturedPhaseShifts = [];
 
             for (let i = 0; i < phases.length; i++) {
                 runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在采集第 ${i + 1}/${phases.length} 帧 (${angleLabels[i]})...`;
@@ -2096,10 +1938,10 @@
 
                 state.fringe.phase = phases[i];
                 updateProjectorMatrix();
+                capturePhaseFrame(phases[i]);
                 drawCameraCCDView(phases[i]);
-                capturedPhaseFrames.push(synthesizeCameraGrayFrame(phases[i], false));
 
-                await new Promise(res => setTimeout(res, 260));
+                await new Promise(res => setTimeout(res, 350));
             }
 
             calculatePhaseAndUnwrap();
@@ -2111,7 +1953,8 @@
             lucide.createIcons();
 
             isAcquiring = false;
-            showNotification("重建成功", `${getActivePhaseMethodConfig().label} 已由多帧灰度图算法解相，并生成 3D 点云。`, "success");
+            showNotification("重建成功", `${getActivePhaseMethodConfig().label} 相位解调完毕，3D 点云已成功生成并在右下角视口渲染！`, "success");
+
         }
 
         document.getElementById('btnRunReconstruction').addEventListener('click', triggerFourStepPhaseAcquisition);
@@ -2146,8 +1989,26 @@
             }
 
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('物体已改变，请重新采集并重建');
+            if (state.proj.projectionMode === 'fringe') {
+                capturedPhaseFrames = [];
+                capturedPhaseShifts = [];
+                calculatePhaseAndUnwrap();
+                rebuild3DPointCloud();
+            } else {
+                referenceSpeckleFrame = null;
+                capturedSpeckleFrame = null;
+                lastComputedWrappedPhase = null;
+                lastComputedUnwrappedPhase = null;
+                pCtx.clearRect(0, 0, phaseCanvas.width, phaseCanvas.height);
+                document.getElementById('lblPhaseState').innerText = "DOE 散斑模式：点击按钮计算视差";
+                if (reconstructedPointsMesh) {
+                    pcScene.remove(reconstructedPointsMesh);
+                    reconstructedPointsMesh = null;
+                }
+                document.getElementById('lblPointCount').innerText = "Points: 0";
+                document.getElementById('lblRMSE').innerText = "RMSE: --";
+                markRecomputeNeeded();
+            }
         }
 
         optSphere.addEventListener('click', () => selectObject('sphere'));
@@ -2186,9 +2047,11 @@
 
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('参数已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
+            if (state.proj.projectionMode === 'doe') {
+                recomputeCurrentMode();
+            } else {
+                markRecomputeNeeded();
+            }
         });
 
 
@@ -2197,9 +2060,6 @@
             document.getElementById('fringeFreqVal').innerText = `${state.fringe.frequency.toFixed(1)} rad/m`;
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('频率已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         phaseShiftInput.addEventListener('input', (e) => {
@@ -2208,9 +2068,6 @@
             document.getElementById('phaseShiftVal').innerText = `${angleDeg.toFixed(0)}°`;
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('相移预览已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         camXInput.addEventListener('input', (e) => {
@@ -2219,9 +2076,11 @@
 
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('参数已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
+            if (state.proj.projectionMode === 'doe') {
+                recomputeCurrentMode();
+            } else {
+                markRecomputeNeeded();
+            }
         });
 
 
@@ -2232,9 +2091,11 @@
             targetMesh.position.set(0, 0, state.board.z);
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('参数已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
+            if (state.proj.projectionMode === 'doe') {
+                recomputeCurrentMode();
+            } else {
+                markRecomputeNeeded();
+            }
         });
 
 
@@ -2272,9 +2133,6 @@
             state.cam.lux = parseInt(e.target.value);
             document.getElementById('camLuxVal').innerText = `${state.cam.lux} Lux`;
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('照度已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         // 切换为 APS 传统灰度模式
@@ -2284,9 +2142,6 @@
             btnSensorEVS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition";
             lblSensorMode.innerText = "APS (Grayscale)";
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('已切换 APS，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         // 切换为 EVS 异步事件极性模式
@@ -2294,11 +2149,8 @@
             state.cam.sensorMode = 'evs';
             btnSensorEVS.className = "text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold transition";
             btnSensorAPS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition";
-            lblSensorMode.innerText = "EVS (Event-Enhanced)";
+            lblSensorMode.innerText = "EVS (Event-Based)";
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('已切换 EVS，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         // 🌟 新增：高度与重建误差着色模式切换监听
@@ -2336,9 +2188,6 @@
             }
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('光学参数已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         btnToggleDistortion.addEventListener('click', () => {
@@ -2352,9 +2201,6 @@
             }
             updateProjectorMatrix();
             drawCameraCCDView(state.fringe.phase);
-            capturedPhaseFrames = [];
-            clearAlgorithmOutputs('光学参数已变化，请重新点击重建按钮运行算法');
-            markRecomputeNeeded();
         });
 
         btnShowWrapped.addEventListener('click', () => {
@@ -2446,7 +2292,8 @@
         updateTargetObject();
         updateProjectorMatrix();
         drawCameraCCDView(state.fringe.phase);
-        clearAlgorithmOutputs('请点击“启动高精度点云重构”运行算法');
+        calculatePhaseAndUnwrap();
+        rebuild3DPointCloud();
 
         // 🌟 极其关键：强制分发一次 resize 信号，让 Three.js 主视口和 3D 点云视口自动根据排版完美对齐，根治初次载入拉伸 Bug
         window.dispatchEvent(new Event('resize'));
@@ -2454,28 +2301,33 @@
 
         // 🌟 修正：点云数据打包导出 (同步水平镜像方向)
         function downloadXYZ() {
-            if (!lastComputedHeightMap) {
-                showNotification("导出失败", "请先启动点云重构以生成数据！", "error");
+            if (!lastComputedUnwrappedPhase) {
+                showNotification("导出失败", "请先启动高精度点云重构以生成数据！", "error");
                 return;
             }
 
             const w = phaseCanvas.width;
             const h = phaseCanvas.height;
-            const aspect = w / h;
-            const colorHelper = new THREE.Color();
+
             let output = "# XYZ Point Cloud File generated by Structure Light Sim\n# Format: X Y Z R G B\n";
-            let exported = 0;
+
+            const baseline = state.cam.x - state.proj.x;
+            const distZ = state.board.z;
+            const colorHelper = new THREE.Color();
+            const aspect = w / h;
 
             for (let v = 0; v < h; v += 2) {
-                const ny = (v / h) * 2 - 1;
                 for (let u = 0; u < w; u += 2) {
                     const idx = v * w + u;
-                    const z_height = lastComputedHeightMap[idx];
-                    if (z_height === -999.0 || !Number.isFinite(z_height)) continue;
+                    const absPhase = lastComputedUnwrappedPhase[idx];
+                    if (absPhase === -999.0) continue;
 
                     const nx = (u / w) * 2 - 1;
+                    // 🌟 同步镜像导出
                     const x_board = nx * 1.6 * aspect;
-                    const y_board = -ny * 1.6;
+                    const y_board = -(v / h) * 1.6;
+                    const projShiftX = absPhase / (state.fringe.frequency * 3.0);
+                    const z_height = (x_board - projShiftX) / (0.75 * (baseline / distZ));
 
                     const normalizedZ = (z_height + 0.2) / 1.5;
                     colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
@@ -2485,23 +2337,17 @@
                     const b = Math.round(colorHelper.b * 255);
 
                     output += `${x_board.toFixed(4)} ${y_board.toFixed(4)} ${z_height.toFixed(4)} ${r} ${g} ${b}\n`;
-                    exported++;
                 }
-            }
-
-            if (exported === 0) {
-                showNotification("导出失败", "当前没有有效点云，请先重建。", "error");
-                return;
             }
 
             const blob = new Blob([output], { type: 'text/plain' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.download = `fanzhen_pointcloud_${state.activeObjectType}_${state.proj.projectionMode}.xyz`;
+            link.download = `fanzhen_pointcloud_${state.activeObjectType}.xyz`;
             link.click();
             URL.revokeObjectURL(link.href);
 
-            showNotification("导出成功", `已下载 ${exported} 个点的三维点云文件！`, "success");
+            showNotification("导出成功", "已成功下载高精度三维点云文件！", "success");
         }
 
 
