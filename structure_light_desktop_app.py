@@ -57,7 +57,7 @@ TEMPORAL_Y_MIN = -1.42
 TEMPORAL_Y_MAX = 1.42
 TEMPORAL_DOT_RX = 0.034
 TEMPORAL_DOT_RY = 0.026
-TEMPORAL_DLP_CODES = np.array([
+TEMPORAL_CODES = np.array([
     [1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
     [0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1],
     [0,0,0,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0],
@@ -116,8 +116,8 @@ class SimState:
     fringe_frequency: float = 8.0
     phase_deg: float = 0.0
     ambient_lux: float = 100.0
-    projector_type: str = "dlp"  # dlp / vcsel
-    projection_mode: str = "fringe"  # fringe / doe / temporal
+    projector_type: str = "dlp"  # Auto-bound by projection_mode: fringe=dlp, temporal=vcsel.
+    projection_mode: str = "fringe"  # fringe / temporal
     sensor_mode: str = "aps"  # aps / evs
     object_type: str = "face"  # face / sphere / peaks / boards
     phase_steps: int = 4
@@ -467,25 +467,6 @@ class StructuredLightPhysics:
         signal = self.physical_projector_signal(state, signal, world_x, world_y, height, valid)
         return self.sensor_response(state, signal, valid), valid, height
 
-    def doe_intensity(self, state: SimState) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        world_x, world_y, height, mask = self.trace_camera_surface(state)
-        u, v = self.projector_coordinates(state, world_x, world_y, height)
-        projection_valid = np.isfinite(u) & np.isfinite(v)
-        uu = np.nan_to_num(u, nan=99.0)
-        vv = np.nan_to_num(v, nan=99.0)
-        dots = self._hash2d(np.floor((uu + 1.7) * 75), np.floor((vv + 1.2) * 75))
-        signal = np.where(dots > 0.82, 1.0, 0.08)
-        if state.projector_type == "vcsel":
-            coherent = 0.72 + 0.28 * self._hash2d(uu * 96.0, vv * 93.0)
-            signal *= coherent
-        else:
-            signal = 0.80 * signal + 0.20 * self._blur3(signal)
-        signal = self._blur3(signal)
-        signal = np.where(self.shadow_mask(state, world_x, world_y, height, mask), signal * 0.22, signal)
-        valid = mask & projection_valid
-        signal = self.physical_projector_signal(state, signal, world_x, world_y, height, valid)
-        return self.sensor_response(state, signal, valid), valid, height
-
     def temporal_pattern(self, state: SimState, frame_index: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         world_x, world_y, height, mask = self.trace_camera_surface(state)
         u, v = self.projector_coordinates(state, world_x, world_y, height)
@@ -499,7 +480,7 @@ class StructuredLightPhysics:
         cy = TEMPORAL_Y_MIN + (row + 0.5) / TEMPORAL_ROWS * (TEMPORAL_Y_MAX - TEMPORAL_Y_MIN)
         r2 = ((u - cx) / TEMPORAL_DOT_RX) ** 2 + ((v - cy) / TEMPORAL_DOT_RY) ** 2
         soft_dot = np.clip(1.0 - (r2 - 0.72) / 0.28, 0.0, 1.0)
-        bit = TEMPORAL_DLP_CODES[int(np.clip(frame_index, 0, 6)), col]
+        bit = TEMPORAL_CODES[int(np.clip(frame_index, 0, 6)), col]
         signal = np.where(inside & (r2 <= 1.0) & (bit > 0), soft_dot, 0.0)
         if state.projector_type == "vcsel":
             coherent = 0.80 + 0.20 * self._hash2d(np.nan_to_num(u, nan=0.0) * 88.0 + frame_index, np.nan_to_num(v, nan=0.0) * 86.0)
@@ -551,15 +532,6 @@ class StructuredLightPhysics:
             "mask": target_mask,
             "truth": true_height,
         }
-
-    def reconstruct_doe(self, state: SimState) -> Dict[str, np.ndarray]:
-        sensor, mask, truth = self.doe_intensity(state)
-        target_mask = self._target_reconstruction_mask(state, truth, mask)
-        confidence = np.clip((sensor - 0.08) * 1.4, 0.0, 1.0)
-        speckle_noise = self._measurement_noise(state, sensor.shape, 0.00018, 0.00070) * (1.15 - confidence)
-        z = np.clip(truth + speckle_noise, -0.8, 1.8)
-        z = self._quality_filter(state, z, target_mask & (confidence > 0.10), base_noise=0.00018)
-        return {"sensor": sensor, "phase": confidence, "height": z, "mask": target_mask, "truth": truth}
 
     def reconstruct_temporal(self, state: SimState) -> Dict[str, np.ndarray]:
         frames = [self.temporal_pattern(state, i)[0] for i in range(7)]
@@ -743,9 +715,7 @@ class SceneCanvas(QtWidgets.QWidget):
     def draw_scene(self, physics: StructuredLightPhysics, state: SimState) -> None:
         self._clear()
         _, _, h, mask = physics.trace_camera_surface(state)
-        if state.projection_mode == "doe":
-            preview_signal, _, _ = physics.doe_intensity(state)
-        elif state.projection_mode == "temporal":
+        if state.projection_mode == "temporal":
             preview_signal, _, _ = physics.temporal_pattern(state, int(state.phase_deg // 52) % 7)
         else:
             preview_signal, _, _ = physics.fringe_intensity(state, math.radians(state.phase_deg))
@@ -1002,7 +972,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         title = QtWidgets.QLabel(APP_TITLE)
         title.setStyleSheet("font-size:22px;font-weight:bold;color:#a78bfa;")
-        subtitle = QtWidgets.QLabel("Python 原生界面 · 正弦条纹 / DOE 散斑 / 点阵时序结构光")
+        subtitle = QtWidgets.QLabel("Python 原生界面 · DLP 正弦条纹 / VCSEL 点阵时序结构光")
         subtitle.setStyleSheet("font-size:12px;color:#94a3b8;")
         self.controls_layout.addWidget(title)
         self.controls_layout.addWidget(subtitle)
@@ -1074,22 +1044,14 @@ class MainWindow(QtWidgets.QMainWindow):
         ], self.set_object)
         self._set_group_checked(self.object_group, self.state.object_type)
 
-        self._section("3. 投影硬件类型")
-        self.projector_type_group = self._button_group([
-            ("DLP 投影", "dlp"),
-            ("VCSEL 投影", "vcsel"),
-        ], self.set_projector_type)
-        self._set_group_checked(self.projector_type_group, self.state.projector_type)
-
-        self._section("4. 投影图案 / 解算方法")
+        self._section("3. 投影图案 / 解算方法")
         self.mode_group = self._button_group([
-            ("条纹结构光", "fringe"),
-            ("DOE 散斑", "doe"),
-            ("点阵时序", "temporal"),
+            ("DLP 条纹结构光", "fringe"),
+            ("VCSEL 点阵时序", "temporal"),
         ], self.set_projection_mode)
         self._set_group_checked(self.mode_group, self.state.projection_mode)
 
-        self._section("5. 相移采集")
+        self._section("4. 相移采集")
         self.phase_group = self._button_group([
             ("3步快速", 3),
             ("4步标准", 4),
@@ -1098,7 +1060,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ], self.set_phase_steps)
         self._set_group_checked(self.phase_group, self.state.phase_steps)
 
-        self._section("6. APS / EVS 与光学误差")
+        self._section("5. APS / EVS 与光学误差")
         self.sensor_group = self._button_group([
             ("APS", "aps"),
             ("EVS", "evs"),
@@ -1218,6 +1180,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.state.extrinsic_yaw_deg = self.extrinsic_yaw_deg.value()
         self.state.extrinsic_pitch_deg = self.extrinsic_pitch_deg.value()
         self.state.extrinsic_roll_deg = self.extrinsic_roll_deg.value()
+        self._apply_projection_hardware_binding()
+
+    def _apply_projection_hardware_binding(self) -> None:
+        if self.state.projection_mode == "temporal":
+            self.state.projector_type = "vcsel"
+        else:
+            self.state.projection_mode = "fringe"
+            self.state.projector_type = "dlp"
 
     def update_calibration_summary(self) -> None:
         s = self.state
@@ -1248,23 +1218,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview()
         self.status.setText("物体已改变，请重新采集并重建")
 
-    def set_projector_type(self, value: str) -> None:
-        self.state.projector_type = value
-        self.last_result = None
-        self.preview()
-        self.update_calibration_summary()
-        source_name = "VCSEL" if value == "vcsel" else "DLP"
-        mode_names = {"fringe": "条纹结构光", "doe": "DOE 散斑", "temporal": "点阵时序结构光"}
-        self.status.setText(f"投影硬件已切换为 {source_name}，当前仍使用 {mode_names[self.state.projection_mode]}")
-
     def set_projection_mode(self, value: str) -> None:
         self.state.projection_mode = value
+        self._apply_projection_hardware_binding()
         self.last_result = None
         self.preview()
         self.update_calibration_summary()
-        source_name = "VCSEL" if self.state.projector_type == "vcsel" else "DLP"
-        names = {"fringe": "条纹结构光", "doe": "DOE 散斑", "temporal": "点阵时序编码结构光"}
-        self.status.setText(f"投影图案已切换：{source_name} + {names[value]}")
+        names = {"fringe": "DLP 条纹结构光", "temporal": "VCSEL 点阵时序编码结构光"}
+        self.status.setText(f"投影图案已切换：{names[self.state.projection_mode]}")
 
     def set_phase_steps(self, value: int) -> None:
         self.state.phase_steps = int(value)
@@ -1315,9 +1276,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def preview(self) -> None:
         self.sync_state_from_controls()
         phase = math.radians(self.state.phase_deg)
-        if self.state.projection_mode == "doe":
-            sensor, _, _ = self.physics.doe_intensity(self.state)
-        elif self.state.projection_mode == "temporal":
+        if self.state.projection_mode == "temporal":
             sensor, _, _ = self.physics.temporal_pattern(self.state, int(self.state.phase_deg // 52) % 7)
         else:
             sensor, _, _ = self.physics.fringe_intensity(self.state, phase)
@@ -1332,18 +1291,7 @@ class MainWindow(QtWidgets.QMainWindow):
         source_name = "VCSEL" if self.state.projector_type == "vcsel" else "DLP"
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            if self.state.projection_mode == "doe":
-                self.status.setText(f"正在执行 {source_name} + DOE 散斑直接拟合...")
-                sensor, _, _ = self.physics.doe_intensity(self.state)
-                self.sensor_view.show_image(sensor, cmap="gray", vmin=0, vmax=1)
-                self.scene.draw_scene(self.physics, self.state)
-                QtWidgets.QApplication.processEvents()
-                self._pause_for_acquisition(80)
-                result = self.physics.reconstruct_doe(self.state)
-                self.sensor_view.show_image(result["sensor"], cmap="gray", vmin=0, vmax=1)
-                self.phase_view.show_image(result["phase"], cmap="viridis", vmin=0, vmax=1)
-                done = f"{source_name} + DOE 散斑点云重建完成"
-            elif self.state.projection_mode == "temporal":
+            if self.state.projection_mode == "temporal":
                 self.status.setText(f"正在投影 {source_name} 的 7 幅点阵编码图并解码 EVS 事件...")
                 previous = None
                 for frame_index in range(7):
@@ -1430,7 +1378,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.phase_deg.set_value(self.state.phase_deg, emit=False)
         self.ambient_lux.set_value(self.state.ambient_lux, emit=False)
         self._set_group_checked(self.object_group, self.state.object_type)
-        self._set_group_checked(self.projector_type_group, self.state.projector_type)
         self._set_group_checked(self.mode_group, self.state.projection_mode)
         self._set_group_checked(self.phase_group, self.state.phase_steps)
         self._set_group_checked(self.sensor_group, self.state.sensor_mode)
