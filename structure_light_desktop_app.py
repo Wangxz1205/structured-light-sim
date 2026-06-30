@@ -905,6 +905,7 @@ class CloudCanvas(QtWidgets.QWidget):
 
 class LabeledSlider(QtWidgets.QWidget):
     value_changed = QtCore.pyqtSignal(float)
+    value_committed = QtCore.pyqtSignal(object, float, float)
 
     def __init__(self, label: str, minimum: float, maximum: float, value: float, step: float, suffix: str) -> None:
         super().__init__()
@@ -949,10 +950,14 @@ class LabeledSlider(QtWidgets.QWidget):
             self.value_changed.emit(value)
 
     def _from_edit(self) -> None:
+        old_value = self.current_value
         try:
             self.set_value(float(self.edit.text()))
         except ValueError:
             self.set_value(self.current_value, emit=False)
+            return
+        if abs(self.current_value - old_value) > 1e-12:
+            self.value_committed.emit(self, old_value, self.current_value)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -961,10 +966,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.state = SimState()
         self.physics = StructuredLightPhysics()
         self.last_result: Dict[str, np.ndarray] | None = None
+        self.undo_stack: List[Tuple[LabeledSlider, float, float]] = []
         self.setWindowTitle(APP_TITLE)
         self.resize(APP_W, APP_H)
         self.setStyleSheet(self._style())
         self._build_ui()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
         self.preview()
 
     def _build_ui(self) -> None:
@@ -1121,8 +1130,33 @@ class MainWindow(QtWidgets.QMainWindow):
     def _add_slider(self, label: str, minimum: float, maximum: float, value: float, step: float, suffix: str) -> LabeledSlider:
         slider = LabeledSlider(label, minimum, maximum, value, step, suffix)
         slider.value_changed.connect(self._parameter_changed)
+        slider.value_committed.connect(self._remember_input_change)
         self.controls_layout.addWidget(slider)
         return slider
+
+    def _remember_input_change(self, control: LabeledSlider, old_value: float, new_value: float) -> None:
+        self.undo_stack.append((control, old_value, new_value))
+        if len(self.undo_stack) > 80:
+            self.undo_stack.pop(0)
+
+    def undo_last_input(self) -> bool:
+        if not self.undo_stack:
+            return False
+        control, old_value, new_value = self.undo_stack.pop()
+        control.set_value(old_value, emit=True)
+        label = control.label.text()
+        self.status.setText(f"已撤回上一次输入：{label} 从 {new_value:g} 恢复为 {old_value:g}")
+        return True
+
+    def eventFilter(self, obj: object, event: QtCore.QEvent) -> bool:
+        if (
+            event.type() == QtCore.QEvent.KeyPress
+            and isinstance(event, QtGui.QKeyEvent)
+            and event.matches(QtGui.QKeySequence.Undo)
+            and self.isActiveWindow()
+        ):
+            return self.undo_last_input()
+        return super().eventFilter(obj, event)
 
     def _button_group(self, items: List[Tuple[str, object]], callback) -> QtWidgets.QButtonGroup:
         box = QtWidgets.QHBoxLayout()
@@ -1365,6 +1399,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def reset_defaults(self) -> None:
         self.state = SimState()
+        self.undo_stack.clear()
         self.projector_x.set_value(self.state.projector_x, emit=False)
         self.camera_x.set_value(self.state.camera_x, emit=False)
         self.board_z.set_value(self.state.board_z, emit=False)
