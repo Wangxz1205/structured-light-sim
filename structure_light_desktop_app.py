@@ -648,23 +648,85 @@ class ImageCanvas(FigureCanvas):
         self.fig = Figure(figsize=(4.0, 3.0), facecolor="#020617")
         super().__init__(self.fig)
         self.ax = self.fig.add_subplot(111)
+        self._image_shape: Tuple[int, int] | None = None
+        self._view_limits: Tuple[float, float, float, float] | None = None
         self.ax.set_facecolor("#020617")
         self.ax.set_title(title, color="#e2e8f0", fontsize=10, fontweight="bold")
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.fig.tight_layout(pad=0.5)
+        self.mpl_connect("scroll_event", self._on_scroll)
+        self.mpl_connect("button_press_event", self._on_button_press)
 
     def show_image(self, image: np.ndarray, cmap: str = "gray", vmin=None, vmax=None) -> None:
         if self.flip_x:
             image = np.flip(image, axis=1)
+        height, width = image.shape[:2]
+        previous_shape = self._image_shape
+        previous_limits = self._view_limits
+        self._image_shape = (height, width)
         self.ax.clear()
         self.ax.set_title(self.title, color="#e2e8f0", fontsize=10, fontweight="bold")
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.ax.imshow(image, cmap=None if image.ndim == 3 else cmap, vmin=vmin, vmax=vmax, origin="upper")
+        if previous_shape == self._image_shape and previous_limits is not None:
+            self._set_limits(previous_limits)
+        else:
+            self._reset_view()
         for spine in self.ax.spines.values():
             spine.set_color("#1e293b")
         self.draw_idle()
+
+    def _full_limits(self) -> Tuple[float, float, float, float]:
+        if self._image_shape is None:
+            return -0.5, 0.5, 0.5, -0.5
+        height, width = self._image_shape
+        return -0.5, width - 0.5, height - 0.5, -0.5
+
+    def _set_limits(self, limits: Tuple[float, float, float, float]) -> None:
+        x0, x1, y0, y1 = limits
+        self.ax.set_xlim(x0, x1)
+        self.ax.set_ylim(y0, y1)
+        self._view_limits = (x0, x1, y0, y1)
+
+    def _reset_view(self) -> None:
+        self._set_limits(self._full_limits())
+
+    def _on_scroll(self, event) -> None:
+        if event.inaxes != self.ax or self._image_shape is None or event.xdata is None or event.ydata is None:
+            return
+        height, width = self._image_shape
+        x0, x1 = self.ax.get_xlim()
+        y0, y1 = self.ax.get_ylim()
+        scale = 0.80 if event.button == "up" else 1.25
+        new_w = np.clip(abs(x1 - x0) * scale, 8.0, float(width))
+        new_h = np.clip(abs(y1 - y0) * scale, 8.0, float(height))
+        cx = float(np.clip(event.xdata, -0.5, width - 0.5))
+        cy = float(np.clip(event.ydata, -0.5, height - 0.5))
+        left = cx - (cx - x0) / max(abs(x1 - x0), 1e-6) * new_w
+        right = left + new_w
+        top = cy - (cy - y1) / max(abs(y0 - y1), 1e-6) * new_h
+        bottom = top + new_h
+        if left < -0.5:
+            right += -0.5 - left
+            left = -0.5
+        if right > width - 0.5:
+            left -= right - (width - 0.5)
+            right = width - 0.5
+        if top < -0.5:
+            bottom += -0.5 - top
+            top = -0.5
+        if bottom > height - 0.5:
+            top -= bottom - (height - 0.5)
+            bottom = height - 0.5
+        self._set_limits((left, right, bottom, top))
+        self.draw_idle()
+
+    def _on_button_press(self, event) -> None:
+        if event.inaxes == self.ax and (event.dblclick or event.button == 3):
+            self._reset_view()
+            self.draw_idle()
 
 
 class SceneCanvas(QtWidgets.QWidget):
@@ -1286,6 +1348,47 @@ class MainWindow(QtWidgets.QMainWindow):
             self.phase_view.show_image(np.zeros((SENSOR_H, SENSOR_W), dtype=np.float32), cmap="gray", vmin=0, vmax=1)
             self.cloud_view.show_cloud(self.physics, None, None, self.state.color_mode, self.state)
 
+    def _board_measurement_report(self, result: Dict[str, np.ndarray]) -> str:
+        height = result["height"]
+        local_x = self.physics.xx - self.state.object_offset_x
+        local_y = self.physics.yy - self.state.object_offset_y
+        rows = []
+        measured_depths: List[float] = []
+        true_depths: List[float] = []
+        for index, (x0, x1, y0, y1, true_depth) in enumerate(self.physics._board_specs(), start=1):
+            # The visible board scene contains front faces plus side faces/occlusion edges.
+            # Measure each board as a depth layer, which is closer to how a step-depth target is inspected.
+            visible = np.isfinite(height) & (np.abs(height - true_depth) < 0.06)
+            true_depths.append(true_depth)
+            if np.any(visible):
+                measured_depth = float(np.nanmedian(height[visible]))
+                xs = local_x[visible]
+                ys = local_y[visible]
+                measured_w = float(np.nanmax(xs) - np.nanmin(xs)) if xs.size else float("nan")
+                measured_h = float(np.nanmax(ys) - np.nanmin(ys)) if ys.size else float("nan")
+                measured_depths.append(measured_depth)
+                error_mm = (measured_depth - true_depth) * 1000.0
+                rows.append(
+                    f"板{index}: 真实宽高 {x1 - x0:.2f}x{y1 - y0:.2f}m, 凸出深度 {true_depth:.3f}m; "
+                    f"点云可见范围 {measured_w:.2f}x{measured_h:.2f}m, 测得深度 {measured_depth:.3f}m, 误差 {error_mm:+.1f}mm"
+                )
+            else:
+                measured_depths.append(float("nan"))
+                rows.append(f"板{index}: 真实宽高 {x1 - x0:.2f}x{y1 - y0:.2f}m, 凸出深度 {true_depth:.3f}m; 对应深度层点数不足")
+        spacings = []
+        for i in range(len(true_depths) - 1):
+            true_gap = true_depths[i + 1] - true_depths[i]
+            measured_gap = measured_depths[i + 1] - measured_depths[i]
+            if np.isfinite(measured_gap):
+                spacings.append(f"板{i + 1}->板{i + 2} 深度差: 真 {true_gap:.3f}m, 测 {measured_gap:.3f}m, 误差 {(measured_gap - true_gap) * 1000.0:+.1f}mm")
+            else:
+                spacings.append(f"板{i + 1}->板{i + 2} 深度差: 真 {true_gap:.3f}m, 测量点不足")
+        total_true_gap = true_depths[-1] - true_depths[0]
+        total_measured_gap = measured_depths[-1] - measured_depths[0]
+        if np.isfinite(total_measured_gap):
+            spacings.append(f"板1->板3 总深度差: 真 {total_true_gap:.3f}m, 测 {total_measured_gap:.3f}m, 误差 {(total_measured_gap - total_true_gap) * 1000.0:+.1f}mm")
+        return "\n".join(rows + spacings)
+
     def run_reconstruction(self) -> None:
         self.sync_state_from_controls()
         source_name = "VCSEL" if self.state.projector_type == "vcsel" else "DLP"
@@ -1315,7 +1418,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.last_result = result
             count, rmse = self.cloud_view.show_cloud(self.physics, result["height"], result["truth"], self.state.color_mode, self.state)
             self.metrics.setText(f"Points: {count}    RMSE: {rmse:.2f} mm")
-            self.status.setText(done)
+            if self.state.object_type == "boards":
+                self.status.setText(done + "\n" + self._board_measurement_report(result))
+            else:
+                self.status.setText(done)
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
 
