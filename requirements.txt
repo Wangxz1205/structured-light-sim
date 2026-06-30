@@ -1,0 +1,5 @@
+PyQt5>=5.15
+numpy>=1.24,<2
+matplotlib>=3.7
+pyqtgraph>=0.13
+PyOpenGL>=3.1

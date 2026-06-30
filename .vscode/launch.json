@@ -1,0 +1,12 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Structure Light Desktop App",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "python structure_light_desktop_app.py",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

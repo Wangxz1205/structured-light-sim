@@ -1,0 +1,1529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>结构光物理仿真与三维点云重建</title>
+    <!-- 本地依赖：避免离线展示时 CDN 加载失败。 -->
+    <script src="/vendor/tailwindcss.js"></script>
+    <script src="/vendor/lucide.js"></script>
+    <script src="/vendor/three.min.js"></script>
+    <script src="/vendor/OrbitControls.js"></script>
+    <script src="/vendor/marked.min.js"></script>
+    <script>
+        window.addEventListener('error', (event) => {
+            const existing = document.getElementById('startupErrorOverlay');
+            if (existing) existing.remove();
+            const overlay = document.createElement('div');
+            overlay.id = 'startupErrorOverlay';
+            overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#020617;color:#fecaca;padding:32px;font-family:Consolas,monospace;overflow:auto;';
+            overlay.innerHTML = `<h2 style="font-size:20px;color:#fca5a5;margin-bottom:12px;">启动失败</h2><p>${event.message || '未知脚本错误'}</p><p style="margin-top:12px;color:#cbd5e1;">请确认 vendor 目录完整，并使用 python structure_light_desktop_app.py 启动。</p>`;
+            document.body.appendChild(overlay);
+        });
+    </script>
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .markdown-body h3 { font-size: 1.1em; font-weight: bold; margin-top: 1em; margin-bottom: 0.5em; color: #818cf8; }
+        .markdown-body p { font-size: 0.85rem; margin-bottom: 0.6em; line-height: 1.5; color: #cbd5e1; }
+        .markdown-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.6em; font-size: 0.85rem; color: #cbd5e1; }
+        .markdown-body code { background: #0f172a; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-family: monospace; color: #f43f5e; }
+    </style>
+</head>
+
+<body class="bg-slate-950 text-slate-100 h-screen flex flex-col font-sans overflow-hidden">
+    <header class="bg-slate-900 border-b border-slate-800 px-6 py-3 flex justify-between items-center z-10">
+        <div class="flex items-center space-x-3">
+            <div class="bg-indigo-600 p-2 rounded-lg text-white">
+                <i data-lucide="sparkles" class="w-6 h-6 text-yellow-300"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-400 to-cyan-400 bg-clip-text text-transparent flex items-center gap-2">
+                    结构光物理仿真与三维点云重建
+                </h1>
+                <p class="text-xs text-slate-400">正弦条纹投影 + 多种物体 + 时序编码结构光 + 三维重建算法</p>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 flex overflow-hidden">
+        <section class="w-[420px] bg-slate-900 border-r border-slate-800 flex flex-col overflow-hidden">
+            <div class="border-b border-slate-800 bg-slate-950/80 p-3.5 flex items-center justify-center gap-2">
+                <i data-lucide="sliders" class="w-4 h-4 text-indigo-400"></i>
+                <span class="text-xs font-bold text-slate-200 uppercase tracking-wide">物理与算法控制</span>
+            </div>
+
+            <div id="physicsPanel" class="flex-1 flex flex-col overflow-y-auto no-scrollbar">
+                <div class="p-4 space-y-5">
+                    <div class="space-y-2">
+                        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center">
+                            <i data-lucide="shapes" class="w-4 h-4 mr-1.5 text-amber-500"></i>
+                            1. 三维被测物体选择
+                        </h3>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button id="btnObjSphere" class="py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition">球体 (Sphere)</button>
+                            <button id="btnObjFace" class="py-1.5 px-2 bg-indigo-600 border border-indigo-500 rounded text-xs font-semibold text-white hover:bg-indigo-500 transition">三维面具 (Face)</button>
+                            <button id="btnObjPeaks" class="py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition">多峰面 (Peaks)</button>
+                        </div>
+                    </div>
+
+                    <div class="space-y-3">
+                        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center border-b border-slate-800/60 pb-1.5">
+                            <i data-lucide="video" class="w-4 h-4 mr-2 text-indigo-400"></i>
+                            2. 投影仪参数 (Projector)
+                        </h3>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">投影仪 X 轴基线偏置</span>
+                                <span class="font-mono text-indigo-400" id="projXVal">-0.8 m</span>
+                            </div>
+                            <input type="range" id="projX" min="-5.0" max="-0.05" step="0.05" value="-0.8" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                            <input type="number" id="projXInput" min="-5.0" max="-0.05" step="0.05" value="-0.8" class="mt-2 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-indigo-300 focus:outline-none focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">条纹空间频率 (Frequency)</span>
+                                <span class="font-mono text-indigo-400" id="fringeFreqVal">8.0 rad/m</span>
+                            </div>
+                            <input type="range" id="fringeFreq" min="2.0" max="25.0" step="0.5" value="8.0" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                            <input type="number" id="fringeFreqInput" min="2.0" max="25.0" step="0.5" value="8.0" class="mt-2 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-indigo-300 focus:outline-none focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">实时相移偏置 (Phase Shift)</span>
+                                <span class="font-mono text-indigo-400" id="phaseShiftVal">0°</span>
+                            </div>
+                            <input type="range" id="phaseShift" min="0" max="360" step="10" value="0" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                            <input type="number" id="phaseShiftInput" min="0" max="360" step="10" value="0" class="mt-2 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-indigo-300 focus:outline-none focus:border-indigo-500">
+                        </div>
+                    </div>
+
+                    <div class="space-y-3">
+                        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center border-b border-slate-800/60 pb-1.5">
+                            <i data-lucide="camera" class="w-4 h-4 mr-2 text-rose-500"></i>
+                            3. 相机及深度设置 (Camera)
+                        </h3>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">相机 X 轴偏置</span>
+                                <span class="font-mono text-rose-400" id="camXVal">0.8 m</span>
+                            </div>
+                            <input type="range" id="camX" min="0.05" max="5.0" step="0.05" value="0.8" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500">
+                            <input type="number" id="camXInput" min="0.05" max="5.0" step="0.05" value="0.8" class="mt-2 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-rose-300 focus:outline-none focus:border-rose-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">物体中心距离 (Z 轴)</span>
+                                <span class="font-mono text-amber-500" id="boardZVal">5.0 m</span>
+                            </div>
+                            <input type="range" id="boardZ" min="3.0" max="8.0" step="0.1" value="5.0" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500">
+                            <input type="number" id="boardZInput" min="3.0" max="8.0" step="0.1" value="5.0" class="mt-2 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">环境照度 (Ambient Illumination)</span>
+                                <span class="font-mono text-emerald-400" id="camLuxVal">100 Lux</span>
+                            </div>
+                            <input type="range" id="camLux" min="1" max="100" step="1" value="100" class="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500">
+                            <input type="number" id="camLuxInput" min="1" max="100" step="1" value="100" class="mt-2 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-emerald-300 focus:outline-none focus:border-emerald-500">
+                        </div>
+                    </div>
+
+                    <div class="space-y-3">
+                        <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center border-b border-slate-800/60 pb-1.5">
+                            <i data-lucide="layers" class="w-4 h-4 mr-2 text-indigo-400"></i>
+                            4. 发射端光学器件仿真 (Optics)
+                        </h3>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">投影物理模式 (Modulation)</span>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button id="btnProjFringe" class="py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition">DLP 条纹</button>
+                                <button id="btnProjDOE" class="py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition">DOE 散斑</button>
+                                <button id="btnProjTemporal" class="py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition">点阵时序</button>
+                            </div>
+                        </div>
+                        <div class="space-y-2 pt-1">
+                            <span class="text-xs text-slate-400 block">透镜非理想效应 (Lens Aberrations)</span>
+                            <div class="flex items-center justify-between">
+                                <span class="text-[11px] text-slate-400 flex items-center"><i data-lucide="focus" class="w-3.5 h-3.5 mr-1 text-indigo-400"></i>透镜景深离焦衰减 (Defocus)</span>
+                                <button id="btnToggleDefocus" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition">已禁用</button>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <span class="text-[11px] text-slate-400 flex items-center"><i data-lucide="eye" class="w-3.5 h-3.5 mr-1 text-rose-400"></i>镜头径向畸变 (Distortion)</span>
+                                <button id="btnToggleDistortion" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition">已禁用</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2">
+                        <h4 class="text-xs font-bold text-slate-200 flex items-center">
+                            <i data-lucide="play" class="w-3.5 h-3.5 mr-1 text-emerald-400"></i>
+                            多步相移条纹采集与重建
+                        </h4>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button id="btnPhase3" class="py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition">3步快速</button>
+                            <button id="btnPhase4" class="py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition">4步标准</button>
+                            <button id="btnPhase5" class="py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition">5步抗噪</button>
+                        </div>
+                        <p class="text-[10px] text-slate-400 leading-normal" id="phaseMethodDesc">当前采用 4 步相移：0°、90°、180°、270°，精度和速度较均衡。</p>
+                        <p class="text-[10px] text-slate-400 leading-normal">点击后，系统将采集多步相移帧，并使用参考平面锚定的空间相位展开与三角反解生成连续点云。</p>
+                        <button id="btnRecomputeCurrent" class="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] rounded border border-slate-700 transition flex items-center justify-center gap-1.5">
+                            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>重新计算当前模式
+                        </button>
+                        <button id="btnRunReconstruction" class="w-full py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs rounded shadow transition flex items-center justify-center gap-1.5">
+                            <i data-lucide="refresh-cw" class="w-4 h-4 animate-spin-slow"></i>启动高精度点云重建
+                        </button>
+                    </div>
+                </div>
+
+                <div class="p-4 border-t border-slate-800 mt-auto bg-slate-950/20">
+                    <button id="resetBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded text-xs font-semibold flex items-center justify-center transition">
+                        <i data-lucide="rotate-ccw" class="w-4 h-4 mr-1.5"></i>复位默认仿真参数
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <section class="flex-1 flex flex-col relative overflow-hidden">
+            <div class="flex-1 relative" id="canvasContainer">
+                <div class="absolute top-4 left-4 bg-slate-900/95 border border-slate-800 p-3 rounded-lg z-10 shadow-lg pointer-events-none">
+                    <h4 class="text-xs font-bold text-slate-200 flex items-center">
+                        <span class="w-2 h-2 rounded-full bg-indigo-500 mr-2 animate-pulse"></span>
+                        三维物理投影场景 (Physical Projector View)
+                    </h4>
+                    <p class="text-[10px] text-slate-400 mt-1">红色设备为相机拍摄端，蓝色设备为投影仪投射端。拖拽鼠标旋转，滚轮缩放。</p>
+                </div>
+                <div id="aiLoadingOverlay" class="absolute inset-0 bg-slate-950/80 z-20 backdrop-blur-sm hidden flex-col items-center justify-center gap-4">
+                    <div class="flex space-x-2">
+                        <div class="w-3 h-3 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+                        <div class="w-3 h-3 bg-purple-500 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                        <div class="w-3 h-3 bg-cyan-500 rounded-full animate-bounce" style="animation-delay: 0.3s"></div>
+                    </div>
+                    <div class="text-center"><p class="text-sm font-bold text-slate-200" id="loadingText">正在解算相位、投影几何与三角重建模型...</p></div>
+                </div>
+                <canvas id="threeCanvas" class="w-full h-full block"></canvas>
+            </div>
+
+            <div id="bottomDock" class="h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-3 gap-3 p-3 relative z-10 transition-all duration-300 overflow-hidden">
+                <div id="sensorContainer" class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300">
+                    <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
+                        <span class="text-xs font-semibold text-rose-400 flex items-center"><i data-lucide="camera" class="w-3.5 h-3.5 mr-1"></i>相机传感器拍摄图</span>
+                        <div class="flex items-center space-x-2">
+                            <div class="flex bg-slate-950 p-0.5 rounded border border-slate-800 mr-1">
+                                <button id="btnSensorAPS" class="text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold transition">APS</button>
+                                <button id="btnSensorEVS" class="text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition">EVS</button>
+                            </div>
+                            <span class="text-[10px] bg-rose-500/15 text-rose-400 px-1.5 rounded font-mono" id="lblSensorMode">APS (Grayscale)</span>
+                            <button class="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition" onclick="toggleMaximizeWindow('sensor')" data-window-btn="sensor" title="最大化视口"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i></button>
+                        </div>
+                    </div>
+                    <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden p-2">
+                        <canvas id="cameraSensorCanvas" class="block bg-black rounded" style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 4 / 3; object-fit: contain;"></canvas>
+                    </div>
+                </div>
+
+                <div id="phaseContainer" class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300">
+                    <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
+                        <span class="text-xs font-semibold text-cyan-400 flex items-center"><i data-lucide="binary" class="w-3.5 h-3.5 mr-1"></i>解码/相位状态 (Decode / Phase)</span>
+                        <div class="flex items-center space-x-2">
+                            <div class="flex space-x-1">
+                                <button id="btnShowWrapped" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition">包裹相位</button>
+                                <button id="btnShowUnwrapped" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition">绝对相位</button>
+                            </div>
+                            <button class="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition" onclick="toggleMaximizeWindow('phase')" data-window-btn="phase" title="最大化视口"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i></button>
+                        </div>
+                    </div>
+                    <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden p-2">
+                        <canvas id="phaseAnalysisCanvas" class="block bg-black rounded" style="width: auto; height: auto; max-width: 95%; max-height: 95%; aspect-ratio: 4 / 3; object-fit: contain;"></canvas>
+                        <div class="absolute bottom-1 right-1 bg-black/70 px-2 py-0.5 rounded text-[9px] text-slate-400 font-mono" id="lblPhaseState">包裹相位范围: [-π, π]</div>
+                    </div>
+                </div>
+
+                <div id="cloudContainerWindow" class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300">
+                    <div class="bg-slate-850 px-3 py-1.5 border-b border-slate-800 flex justify-between items-center">
+                        <span class="text-xs font-semibold text-emerald-400 flex items-center"><i data-lucide="boxes" class="w-3.5 h-3.5 mr-1"></i>重建 3D 点云视口</span>
+                        <div class="flex items-center space-x-2">
+                            <div class="flex bg-slate-950 p-0.5 rounded border border-slate-800 text-[9px] font-bold">
+                                <button id="btnColorHeight" class="bg-indigo-600 text-white px-1.5 py-0.5 rounded transition">高度</button>
+                                <button id="btnColorError" class="text-slate-400 px-1.5 py-0.5 rounded transition">误差</button>
+                            </div>
+                            <span class="text-[9px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded font-mono font-bold" id="lblRMSE">RMSE: 0.00 mm</span>
+                            <button onclick="downloadXYZ()" class="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 rounded transition flex items-center gap-1"><i data-lucide="download" class="w-3 h-3"></i> 导出数据</button>
+                            <span class="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 rounded font-mono" id="lblPointCount">Points: 0</span>
+                            <button class="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition" onclick="toggleMaximizeWindow('cloud')" data-window-btn="cloud" title="最大化视口"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i></button>
+                        </div>
+                    </div>
+                    <div class="flex-1 min-h-0 bg-black relative flex items-center justify-center overflow-hidden" id="pointCloudContainer">
+                        <canvas id="reconstructedCloudCanvas" class="w-full h-full block bg-black"></canvas>
+                        <div id="pcColorbarPanel" class="absolute bottom-2 right-2 bg-slate-950/90 border border-slate-800/80 p-2 rounded-lg flex flex-col space-y-1 shadow-2xl z-10 pointer-events-none w-28">
+                            <div class="text-[8px] font-bold text-slate-300 uppercase tracking-wider text-center" id="lblColorbarTitle">深度高度色标</div>
+                            <div id="divColorbarGradient" class="h-2 w-full rounded border border-slate-700/50" style="background: linear-gradient(to right, hsl(198, 95%, 45%), hsl(230, 95%, 50%), hsl(263, 95%, 55%));"></div>
+                            <div class="flex justify-between text-[7px] font-mono text-slate-400"><span id="lblColorbarMin">-0.2 m</span><span id="lblColorbarMax">1.3 m</span></div>
+                        </div>
+                        <div class="absolute bottom-2 left-2 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-[9px] text-slate-400 pointer-events-none">
+                            可在此窗口中拖动旋转重建的 3D 人脸/球面
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- JavaScript 物理、投影、相移与点云重建逻辑 -->
+    <script>
+        lucide.createIcons();
+
+        function showNotification(title, text, type = 'error') {
+            const container = document.createElement('div');
+            container.className = `fixed top-16 left-1/2 transform -translate-x-1/2 z-50 px-4 py-3 rounded-lg border shadow-xl flex items-center space-x-3 transition duration-300 max-w-md ${type === 'error' ? 'bg-red-950 border-red-500/50 text-red-200' : 'bg-emerald-950 border-emerald-500/50 text-emerald-200'}`;
+            const icon = type === 'error' ? 'alert-triangle' : 'check-circle';
+            container.innerHTML = `<i data-lucide="${icon}" class="w-5 h-5 flex-shrink-0"></i><div><h5 class="text-xs font-bold">${title}</h5><p class="text-[10px] mt-0.5 opacity-80">${text}</p></div>`;
+            document.body.appendChild(container);
+            lucide.createIcons();
+            setTimeout(() => {
+                container.classList.add('opacity-0');
+                setTimeout(() => container.remove(), 300);
+            }, 4000);
+        }
+
+        const state = {
+            activeObjectType: 'face',
+            proj: { x: -0.8, y: 0, z: 0, yaw: 15, angle: 45, projectionMode: 'fringe', lensDefocus: false, lensDistortion: false },
+            fringe: { frequency: 8.0, phase: 0.0 },
+            cam: { x: 0.8, y: 0, z: 0, fov: 35, lux: 100, sensorMode: 'aps' },
+            board: { z: 5.0 },
+            phaseStateView: 'wrapped',
+            pcColorMode: 'height',
+            phaseMethod: '4step'
+        };
+
+        const FULL_SENSOR_W = 320, FULL_SENSOR_H = 240;
+        const PREVIEW_SENSOR_W = 160, PREVIEW_SENSOR_H = 120;
+        let parameterPreviewRAF = null, parameterPreviewTimer = null;
+        let deterministicReconstruction = false;
+
+        const SENSOR_SPEC = {
+            model: 'APX003CA',
+            apsWidth: 3264,
+            apsHeight: 2448,
+            apsPixelSizeUm: 1.89,
+            apsFrameRateFps: 30,
+            apsFullWellElectrons: 8500.0,
+            apsReadNoiseElectrons: 7.7,
+            apsDynamicRangeDb: 59.0,
+            evsWidth: 816,
+            evsHeight: 612,
+            evsBinning: 4,
+            evsFrameRateFps: 1000,
+            evsNominalNoiseFps: 300,
+            evsContrastSensitivity: 0.08,
+            evsStationaryNoiseHz: 1.7,
+            evsLatencySeconds: 80e-6,
+            evsDynamicRangeDb: 86.0,
+            evsMinLux: 5.0,
+            evsMaxLux: 100000.0
+        };
+
+        const rowNoisePattern = new Float32Array(256);
+        const colNoisePattern = new Float32Array(256);
+        const pixelUniformityPattern = new Float32Array(256 * 256);
+        for (let i = 0; i < 256; i++) { rowNoisePattern[i] = (Math.random() * 2 - 1); colNoisePattern[i] = (Math.random() * 2 - 1); }
+        for (let i = 0; i < 256 * 256; i++) { pixelUniformityPattern[i] = (Math.random() * 2 - 1); }
+
+        const container = document.getElementById('canvasContainer');
+        const mainScene = new THREE.Scene();
+        mainScene.background = new THREE.Color(0x060a13);
+
+        const mainCamera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 50);
+        mainCamera.position.set(0, 5, 8);
+
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('threeCanvas'), antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        const MAX_RENDER_PIXEL_RATIO = 1.0;
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_RENDER_PIXEL_RATIO));
+        renderer.shadowMap.enabled = true;
+
+        const controls = new THREE.OrbitControls(mainCamera, renderer.domElement);
+        controls.enableDamping = true; controls.dampingFactor = 0.05; controls.maxPolarAngle = Math.PI / 2 - 0.05;
+
+        mainScene.add(new THREE.AmbientLight(0x0a1020));
+        const gridHelper = new THREE.GridHelper(20, 40, 0x1e293b, 0x0f172a);
+        gridHelper.position.y = -2;
+        mainScene.add(gridHelper);
+
+        function createHardwareModel(color, type) {
+            const group = new THREE.Group();
+            if (type === 'projector') {
+                group.add(new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.25, 0.5), new THREE.MeshBasicMaterial({ color })));
+                const lens = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.2), new THREE.MeshBasicMaterial({ color: 0xdddddd }));
+                lens.position.set(0, 0, 0.3); group.add(lens);
+            } else {
+                group.add(new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.38, 0.4), new THREE.MeshBasicMaterial({ color })));
+                const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.22, 16), new THREE.MeshBasicMaterial({ color: 0xaaaaaa }));
+                lens.rotateX(Math.PI / 2); lens.position.set(0, 0, 0.3); group.add(lens);
+            }
+            return group;
+        }
+
+        const projModel = createHardwareModel(0x3b82f6, 'projector');
+        const camModel = createHardwareModel(0xf43f5e, 'camera');
+        mainScene.add(projModel); mainScene.add(camModel);
+
+        let targetMesh = null;
+        function buildProceduralGeometry(type) {
+            const geom = new THREE.PlaneGeometry(3.5, 3.5, 200, 200);
+            const pos = geom.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                const x = pos.getX(i), y = pos.getY(i); let z = 0;
+                if (type === 'sphere') {
+                    const r = 1.2, distSq = x * x + y * y; if (distSq < r * r) z = Math.sqrt(r * r - distSq);
+                } else if (type === 'face') {
+                    const baseDome = 0.4 * Math.exp(-(x * x + y * y) / 2.0), nose = 0.8 * Math.exp(-((x * x) / 0.06 + ((y - 0.25) * (y - 0.25)) / 0.22));
+                    const leftCheek = 0.32 * Math.exp(-(((x + 0.5) * (x + 0.5)) / 0.14 + ((y + 0.1) * (y + 0.1)) / 0.18)), rightCheek = 0.32 * Math.exp(-(((x - 0.5) * (x - 0.5)) / 0.14 + ((y + 0.1) * (y + 0.1)) / 0.18));
+                    const chin = 0.25 * Math.exp(-((x * x) / 0.12 + ((y + 0.85) * (y + 0.85)) / 0.12)), forehead = 0.15 * Math.exp(-((x * x) / 0.6 + ((y - 0.8) * (y - 0.8)) / 0.3));
+                    const leftEye = -0.12 * Math.exp(-(((x + 0.38) * (x + 0.38)) / 0.08 + ((y - 0.45) * (y - 0.45)) / 0.08)), rightEye = -0.12 * Math.exp(-(((x - 0.38) * (x - 0.38)) / 0.08 + ((y - 0.45) * (y - 0.45)) / 0.08));
+                    z = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEye + rightEye;
+                } else if (type === 'peaks') {
+                    z = 0.35 * Math.sin(x * 3.2) * Math.cos(y * 3.2) + 0.18 * Math.cos(x * 6.5) + 0.15 * Math.sin(y * 5.0);
+                }
+                pos.setZ(i, z);
+            }
+            geom.computeVertexNormals(); return geom;
+        }
+
+        let targetShaderMaterial = null;
+        function initShaderMaterial() {
+            const uniforms = {
+                projectorMatrix: { value: new THREE.Matrix4() }, fringeFrequency: { value: state.fringe.frequency }, phaseShift: { value: state.fringe.phase },
+                projCenterZ: { value: state.board.z }, activeColor: { value: new THREE.Color(0xd1d5db) }, projectionMode: { value: 0 },
+                lensDefocus: { value: 0 }, lensDistortion: { value: 0 }, activeObjectType: { value: 1 }, projectorPos: { value: new THREE.Vector3(state.proj.x, state.proj.y, state.proj.z) }
+            };
+            targetShaderMaterial = new THREE.ShaderMaterial({
+                uniforms: uniforms,
+                vertexShader: `
+                    varying vec4 vProjectorUV; varying vec3 vWorldPosition; varying vec3 vNormal; uniform mat4 projectorMatrix;
+                    void main() {
+                        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz; vNormal = normalize(normalMatrix * normal);
+                        vProjectorUV = projectorMatrix * modelMatrix * vec4(position, 1.0);
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    varying vec4 vProjectorUV; varying vec3 vWorldPosition; varying vec3 vNormal;
+                    uniform float fringeFrequency; uniform float phaseShift; uniform float projCenterZ; uniform vec3 activeColor;
+                    uniform int projectionMode; uniform int lensDefocus; uniform int lensDistortion; uniform int activeObjectType; uniform vec3 projectorPos;
+                    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+                    float getSurfaceHeightGLSL(vec2 p) {
+                        float z = 0.0;
+                        if (activeObjectType == 0) {
+                            float r = 1.2; float distSq = p.x * p.x + p.y * p.y; if (distSq < r * r) z = sqrt(r * r - distSq);
+                        } else if (activeObjectType == 1) {
+                            z = 0.4*exp(-(p.x*p.x+p.y*p.y)/2.0) + 0.8*exp(-((p.x*p.x)/0.06+((p.y-0.25)*(p.y-0.25))/0.22)) + 0.32*exp(-(((p.x+0.5)*(p.x+0.5))/0.14+((p.y+0.1)*(p.y+0.1))/0.18)) + 0.32*exp(-(((p.x-0.5)*(p.x-0.5))/0.14+((p.y+0.1)*(p.y+0.1))/0.18)) + 0.25*exp(-((p.x*p.x)/0.12+((p.y+0.85)*(p.y+0.85))/0.12)) + 0.15*exp(-((p.x*p.x)/0.6+((p.y-0.8)*(p.y-0.8))/0.3)) - 0.12*exp(-(((p.x+0.38)*(p.x+0.38))/0.08+((p.y-0.45)*(p.y-0.45))/0.08)) - 0.12*exp(-(((p.x-0.38)*(p.x-0.38))/0.08+((p.y-0.45)*(p.y-0.45))/0.08));
+                        } else if (activeObjectType == 2) { z = 0.35*sin(p.x*3.2)*cos(p.y*3.2)+0.18*cos(p.x*6.5)+0.15*sin(p.y*5.0); } return z;
+                    }
+                    bool checkShadowGLSL(vec3 pos, vec3 projPos) {
+                        const int steps = 12;
+                        for (int i = 1; i <= steps; i++) {
+                            float t = float(i) / float(steps); vec3 r = mix(pos, projPos, t);
+                            vec2 local_xy = vec2(-r.x, r.y); float ray_local_z = projCenterZ - r.z; 
+                            if (ray_local_z <= 0.0) break;
+                            if (getSurfaceHeightGLSL(local_xy) > ray_local_z + 0.04 * (1.0 - t) + 0.01) return true;
+                        } return false;
+                    }
+                    void main() {
+                        vec3 projCoords = vProjectorUV.xyz / vProjectorUV.w; vec2 uvProj = projCoords.xy * 0.5 + 0.5;
+                        vec3 lightDir = normalize(vec3(-2.0, 3.0, 2.0)); float diff = max(dot(vNormal, lightDir), 0.15);
+                        if (uvProj.x >= 0.0 && uvProj.x <= 1.0 && uvProj.y >= 0.0 && uvProj.y <= 1.0 && vProjectorUV.w > 0.0) {
+                            vec2 coords = projCoords.xy; if (lensDistortion == 1) coords = coords * (1.0 + 0.12 * dot(coords, coords));
+                            float projX = coords.x * 6.2831853; float intensity = 0.5;
+                            if (projectionMode == 1) { intensity = hash(floor(coords * fringeFrequency * 8.0)) > 0.85 ? 1.0 : 0.0;
+                            } else if (projectionMode == 2) {
+                                float patternX = coords.x * 2.05; float patternY = coords.y * 2.05; float xMin = -1.85; float xMax =  1.85; float yMin = -1.42; float yMax =  1.42;
+                                float colF = floor((patternX - xMin) / (xMax - xMin) * 26.0); float rowF = floor((patternY - yMin) / (yMax - yMin) * 30.0);
+                                if (colF >= 0.0 && colF < 26.0 && rowF >= 0.0 && rowF < 30.0) {
+                                    float cx = xMin + (colF + 0.5) / 26.0 * (xMax - xMin); float cy = yMin + (rowF + 0.5) / 30.0 * (yMax - yMin);
+                                    float r2 = pow((patternX - cx)/0.036, 2.0) + pow((patternY - cy)/0.032, 2.0);
+                                    float f = mod(floor(phaseShift + 0.5), 7.0); float bit = 0.0;
+                                    if (f < 0.5) bit = (colF < 13.0) ? 1.0 : 0.0;
+                                    else if (f < 1.5) bit = ((colF >= 8.0 && colF <= 12.0) || colF >= 18.0) ? 1.0 : 0.0;
+                                    else if (f < 2.5) bit = ((colF >= 3.0 && colF <= 7.0) || (colF >= 13.0 && colF <= 20.0)) ? 1.0 : 0.0;
+                                    else if (f < 3.5) bit = ((colF <= 4.0) || (colF >= 10.0 && colF <= 12.0) || (colF >= 16.0 && colF <= 17.0) || colF >= 23.0) ? 1.0 : 0.0;
+                                    else if (f < 4.5) bit = ((colF == 2.0) || (colF >= 6.0 && colF <= 10.0) || (colF >= 14.0 && colF <= 15.0) || (colF >= 18.0 && colF <= 19.0) || (colF >= 21.0 && colF <= 22.0) || colF == 24.0) ? 1.0 : 0.0;
+                                    else if (f < 5.5) bit = ((colF == 0.0) || (colF >= 4.0 && colF <= 6.0) || colF == 9.0 || (colF >= 12.0 && colF <= 14.0) || colF == 17.0 || (colF >= 19.0 && colF <= 20.0) || colF == 22.0 || colF == 25.0) ? 1.0 : 0.0;
+                                    else bit = ((colF <= 5.0) || (colF >= 7.0 && colF <= 8.0) || (colF >= 10.0 && colF <= 12.0) || colF == 16.0 || colF == 18.0 || (colF >= 20.0 && colF <= 21.0) || colF >= 23.0) ? 1.0 : 0.0;
+                                    intensity = (bit > 0.5) ? smoothstep(1.0, 0.72, r2) : 0.0;
+                                }
+                            } else {
+                                float fringeVal = cos(projX * fringeFrequency + phaseShift);
+                                if (lensDefocus == 1) fringeVal *= exp(-pow((vWorldPosition.z - projCenterZ) - 0.3, 2.0) / 0.15);
+                                intensity = 0.5 + 0.5 * fringeVal;
+                            }
+                            if (projectionMode != 2 && checkShadowGLSL(vWorldPosition, projectorPos)) intensity = 0.05;
+                            gl_FragColor = vec4(vec3(intensity) * diff, 1.0);
+                        } else gl_FragColor = vec4(activeColor * 0.1 * diff, 1.0);
+                    }
+                `, side: THREE.DoubleSide
+            });
+        }
+
+        function updateTargetObject() {
+            if (targetMesh) mainScene.remove(targetMesh);
+            const geom = buildProceduralGeometry(state.activeObjectType);
+            if (!targetShaderMaterial) initShaderMaterial();
+            targetMesh = new THREE.Mesh(geom, targetShaderMaterial);
+            targetMesh.position.set(0, 0, state.board.z); targetMesh.rotation.set(0, Math.PI, 0); mainScene.add(targetMesh);
+        }
+
+        const projectorCamera = new THREE.PerspectiveCamera(state.proj.angle, 1, 0.1, 20);
+        function updateProjectorMatrix() {
+            projectorCamera.position.set(state.proj.x, state.proj.y, state.proj.z); projectorCamera.fov = state.proj.angle;
+            projectorCamera.lookAt(0, 0, state.board.z); projectorCamera.updateMatrixWorld();
+            projectorCamera.matrixWorldInverse.copy(projectorCamera.matrixWorld).invert(); projectorCamera.updateProjectionMatrix();
+
+            const projVP = new THREE.Matrix4().multiplyMatrices(projectorCamera.projectionMatrix, projectorCamera.matrixWorldInverse);
+            if (targetShaderMaterial) {
+                targetShaderMaterial.uniforms.projectorMatrix.value.copy(projVP); targetShaderMaterial.uniforms.fringeFrequency.value = state.fringe.frequency;
+                targetShaderMaterial.uniforms.phaseShift.value = state.fringe.phase; targetShaderMaterial.uniforms.projCenterZ.value = state.board.z;
+                targetShaderMaterial.uniforms.projectionMode.value = state.proj.projectionMode === 'doe' ? 1 : (state.proj.projectionMode === 'temporal' ? 2 : 0);
+                targetShaderMaterial.uniforms.lensDefocus.value = state.proj.lensDefocus ? 1 : 0; targetShaderMaterial.uniforms.lensDistortion.value = state.proj.lensDistortion ? 1 : 0;
+                targetShaderMaterial.uniforms.projectorPos.value.set(state.proj.x, state.proj.y, state.proj.z);
+            }
+            projModel.position.set(state.proj.x, state.proj.y, state.proj.z); projModel.lookAt(0, 0, state.board.z);
+            camModel.position.set(state.cam.x, state.cam.y, state.cam.z); camModel.lookAt(0, 0, state.board.z);
+        }
+
+        const sensorCanvas = document.getElementById('cameraSensorCanvas');
+        const sCtx = sensorCanvas.getContext('2d');
+        sensorCanvas.width = 256; sensorCanvas.height = 256;
+
+        function getSurfaceHeight(x, y) {
+            let z = 0;
+            if (state.activeObjectType === 'sphere') {
+                const r = 1.2, dSq = x * x + y * y; if (dSq < r * r) z = Math.sqrt(r * r - dSq);
+            } else if (state.activeObjectType === 'face') {
+                const baseDome = 0.4 * Math.exp(-(x * x + y * y) / 2.0);
+                const nose = 0.8 * Math.exp(-((x * x) / 0.06 + ((y - 0.25) * (y - 0.25)) / 0.22));
+                const leftCheek = 0.32 * Math.exp(-(((x + 0.5) * (x + 0.5)) / 0.14 + ((y + 0.1) * (y + 0.1)) / 0.18));
+                const rightCheek = 0.32 * Math.exp(-(((x - 0.5) * (x - 0.5)) / 0.14 + ((y + 0.1) * (y + 0.1)) / 0.18));
+                const chin = 0.25 * Math.exp(-((x * x) / 0.12 + ((y + 0.85) * (y + 0.85)) / 0.12));
+                const forehead = 0.15 * Math.exp(-((x * x) / 0.6 + ((y - 0.8) * (y - 0.8)) / 0.3));
+                const leftEye = -0.12 * Math.exp(-(((x + 0.38) * (x + 0.38)) / 0.08 + ((y - 0.45) * (y - 0.45)) / 0.08));
+                const rightEye = -0.12 * Math.exp(-(((x - 0.38) * (x - 0.38)) / 0.08 + ((y - 0.45) * (y - 0.45)) / 0.08));
+                z = baseDome + nose + leftCheek + rightCheek + chin + forehead + leftEye + rightEye;
+            } else if (state.activeObjectType === 'peaks') {
+                z = 0.35 * Math.sin(x * 3.2) * Math.cos(y * 3.2) + 0.18 * Math.cos(x * 6.5) + 0.15 * Math.sin(y * 5.0);
+            } return z;
+        }
+
+        function getSurfaceHeightWorld(worldX, worldY) { return getSurfaceHeight(-worldX, worldY); }
+
+        function checkShadowOcclusion(worldX, worldY, zHeightAtPoint) {
+            const boardZ = state.board.z, targetX = worldX, targetY = worldY, targetZ = boardZ - zHeightAtPoint;
+            const projX = state.proj.x, projY = state.proj.y || 0.0, projZ = state.proj.z || 0.0, steps = 32;
+            for (let i = 1; i < steps; i++) {
+                const t = i / steps, rx = projX + (targetX - projX) * t, ry = projY + (targetY - projY) * t, rz = projZ + (targetZ - projZ) * t;
+                const surfaceZ = boardZ - getSurfaceHeightWorld(rx, ry); if (surfaceZ < rz - 0.025) return true;
+            } return false;
+        }
+
+        function getCameraRay(nx, ny, aspect) {
+            const camX = state.cam.x, boardZ = state.board.z, fovRad = state.cam.fov * Math.PI / 180;
+            const tanY = Math.tan(fovRad / 2), tanX = tanY * aspect;
+            let fx = -camX, fy = 0.0, fz = boardZ; const flen = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1.0; fx /= flen; fy /= flen; fz /= flen;
+            let rx = -fz, ry = 0.0, rz = fx; const rlen = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1.0; rx /= rlen; ry /= rlen; rz /= rlen;
+            const ux = 0.0, uy = 1.0, uz = 0.0;
+            let dx = fx + rx * (nx * tanX) + ux * (-ny * tanY), dy = fy + ry * (nx * tanX) + uy * (-ny * tanY), dz = fz + rz * (nx * tanX) + uz * (-ny * tanY);
+            const dlen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1.0;
+            return { ox: camX, oy: 0.0, oz: 0.0, dx: dx / dlen, dy: dy / dlen, dz: dz / dlen };
+        }
+
+        function pointOnCameraRayAtHeight(nx, ny, aspect, height) {
+            const ray = getCameraRay(nx, ny, aspect), worldZ = state.board.z - height;
+            if (Math.abs(ray.dz) < 1e-6) return null; const t = (worldZ - ray.oz) / ray.dz; if (t <= 0) return null;
+            return { x: ray.ox + ray.dx * t, y: ray.oy + ray.dy * t, height: height, worldZ: worldZ };
+        }
+
+        function traceCameraPixelToSurface(nx, ny, aspect, useFlatObject = false) {
+            if (useFlatObject) return pointOnCameraRayAtHeight(nx, ny, aspect, 0.0);
+            const ray = getCameraRay(nx, ny, aspect), boardZ = state.board.z;
+            if (ray.dz <= 1e-6) return null;
+            let t0 = 0.0, t1 = (boardZ - ray.oz) / ray.dz; if (t1 <= 0) return null;
+            for (let i = 0; i < 24; i++) {
+                const tm = 0.5 * (t0 + t1), x = ray.ox + ray.dx * tm, y = ray.oy + ray.dy * tm;
+                if (ray.oz + ray.dz * tm - (boardZ - getSurfaceHeightWorld(x, y)) < 0) t0 = tm; else t1 = tm;
+            }
+            const t = t1, x = ray.ox + ray.dx * t, y = ray.oy + ray.dy * t;
+            return { x: x, y: y, height: getSurfaceHeightWorld(x, y), worldZ: boardZ - getSurfaceHeightWorld(x, y) };
+        }
+
+        function projectorPatternCoordsFromSurfacePoint(x, y, height) {
+            const boardZ = state.board.z, projX = state.proj.x, projY = state.proj.y || 0.0, projZ = state.proj.z || 0.0, worldZ = boardZ - height;
+            let fx = -projX, fy = -projY, fz = boardZ - projZ; const flen = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1.0; fx /= flen; fy /= flen; fz /= flen;
+            const rx = -fz, ry = 0.0, rz = fx, ux = 0.0, uy = 1.0, uz = 0.0;
+            const qx = x - projX, qy = y - projY, qz = worldZ - projZ, depth = qx * fx + qy * fy + qz * fz;
+            if (Math.abs(depth) < 1e-6) return { x: 0.0, y: 0.0 };
+            return { x: ((qx * rx + qy * ry + qz * rz) / depth) * boardZ, y: ((qx * ux + qy * uy + qz * uz) / depth) * boardZ };
+        }
+
+        function applyProjectorLensDistortionToCoords(coords) {
+            if (!state.proj.lensDistortion) return coords;
+            const k1 = 0.12;
+            const r2 = coords.x * coords.x + coords.y * coords.y;
+            return { x: coords.x * (1.0 + k1 * r2), y: coords.y * (1.0 + k1 * r2) };
+        }
+
+        // 计算给定高度相对于参考平面的连续相位差，用于相位到高度的三角反解。
+        function phaseDiffForHeightAtPixel(nx, ny, aspect, height) {
+            const flatHit = pointOnCameraRayAtHeight(nx, ny, aspect, 0.0);
+            const objHit = pointOnCameraRayAtHeight(nx, ny, aspect, height);
+            if (!flatHit || !objHit) return NaN;
+            const flatCoords = applyProjectorLensDistortionToCoords(projectorPatternCoordsFromSurfacePoint(flatHit.x, flatHit.y, 0.0));
+            const objCoords = applyProjectorLensDistortionToCoords(projectorPatternCoordsFromSurfacePoint(objHit.x, objHit.y, height));
+            return (flatCoords.x - objCoords.x) * state.fringe.frequency * 3.0;
+        }
+
+        // 稳定的绝对相位到高度二分映射。
+        function solveHeightForAbsolutePhaseDiff(nx, ny, aspect, targetPhaseDiff) {
+            if (!Number.isFinite(targetPhaseDiff)) return -999.0;
+            let lo = 0.0, hi = 1.8;
+            let fLo = phaseDiffForHeightAtPixel(nx, ny, aspect, lo) - targetPhaseDiff;
+            let fHi = phaseDiffForHeightAtPixel(nx, ny, aspect, hi) - targetPhaseDiff;
+
+            if (!Number.isFinite(fLo) || !Number.isFinite(fHi)) return -999.0;
+
+            // 超出常规范围时钳位到边界，避免产生飞点。
+            if (fLo * fHi > 0) {
+                return Math.abs(fLo) < Math.abs(fHi) ? lo : hi;
+            }
+
+            for (let i = 0; i < 32; i++) {
+                const mid = 0.5 * (lo + hi);
+                const fMid = phaseDiffForHeightAtPixel(nx, ny, aspect, mid) - targetPhaseDiff;
+                if (!Number.isFinite(fMid)) return -999.0;
+                if (fLo * fMid <= 0) { hi = mid; fHi = fMid; } else { lo = mid; fLo = fMid; }
+            }
+            return 0.5 * (lo + hi);
+        }
+
+        function unwrapPhaseDiffFromReferencePlane(wrappedDiff, valid, w, h) {
+            const total = w * h, unwrapped = new Float32Array(total).fill(-999.0), visited = new Uint8Array(total);
+            const q = [];
+            function pushSeed(idx) {
+                if (visited[idx] || !valid[idx] || !Number.isFinite(wrappedDiff[idx])) return;
+                if (Math.abs(wrappedDiff[idx]) > Math.PI * 0.75) return;
+                visited[idx] = 1; unwrapped[idx] = wrappedDiff[idx]; q.push(idx);
+            }
+            for (let u = 0; u < w; u++) { pushSeed(u); pushSeed((h - 1) * w + u); }
+            for (let v = 0; v < h; v++) { pushSeed(v * w); pushSeed(v * w + w - 1); }
+            if (q.length === 0) {
+                let bestIdx = -1, bestAbs = Infinity;
+                for (let i = 0; i < total; i++) {
+                    if (valid[i] && Number.isFinite(wrappedDiff[i]) && Math.abs(wrappedDiff[i]) < bestAbs) { bestAbs = Math.abs(wrappedDiff[i]); bestIdx = i; }
+                }
+                if (bestIdx >= 0) { visited[bestIdx] = 1; unwrapped[bestIdx] = wrappedDiff[bestIdx]; q.push(bestIdx); }
+            }
+            let head = 0;
+            while (head < q.length) {
+                const idx = q[head++], u = idx % w, v = Math.floor(idx / w), parent = unwrapped[idx];
+                const nbs = [];
+                if (u > 0) nbs.push(idx - 1);
+                if (u < w - 1) nbs.push(idx + 1);
+                if (v > 0) nbs.push(idx - w);
+                if (v < h - 1) nbs.push(idx + w);
+                for (const ni of nbs) {
+                    if (visited[ni] || !valid[ni] || !Number.isFinite(wrappedDiff[ni])) continue;
+                    const k = Math.round((parent - wrappedDiff[ni]) / (2 * Math.PI));
+                    unwrapped[ni] = wrappedDiff[ni] + k * 2 * Math.PI;
+                    visited[ni] = 1; q.push(ni);
+                }
+            }
+            return unwrapped;
+        }
+
+        function wrapToPi(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+
+        function hash2D(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123; return s - Math.floor(s); }
+        function smoothstep(edge0, edge1, x) { const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0))); return t * t * (3 - 2 * t); }
+        function gaussianRandom() {
+            let u = 0, v = 0;
+            while (u === 0) u = Math.random();
+            while (v === 0) v = Math.random();
+            return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+        }
+        function doeSpeckleIntensity(x, y) {
+            const s1 = 58.0, s2 = 97.0;
+            const n1 = hash2D(Math.floor(x * s1), Math.floor(y * s1));
+            const n2 = hash2D(Math.floor(x * s2 + 19.0), Math.floor(y * s2 - 31.0));
+            const fine = hash2D(Math.floor((x + y) * 141.0), Math.floor((x - y) * 137.0));
+            const dot = n1 > 0.78 ? 1.0 : 0.0;
+            return Math.max(dot, 0.58 * n1 + 0.30 * n2 + 0.12 * fine);
+        }
+
+        const TEMPORAL_COLUMN_COUNT = 26; const TEMPORAL_ROW_COUNT = 30;
+        const TEMPORAL_X_MIN = -1.85, TEMPORAL_X_MAX = 1.85, TEMPORAL_Y_MIN = -1.42, TEMPORAL_Y_MAX = 1.42;
+        const TEMPORAL_DOT_RX = 0.036, TEMPORAL_DOT_RY = 0.032;
+        const temporalDlpCodes = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1],
+            [0,0,0,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0],
+            [1,1,1,1,1,0,0,0,0,0,1,1,1,0,0,0,1,1,0,0,0,0,0,1,1,1],
+            [0,0,1,0,0,0,1,1,1,1,1,0,0,0,1,1,0,0,1,1,0,1,1,0,1,0],
+            [1,0,0,0,1,1,1,0,0,1,0,0,1,1,1,0,0,1,0,1,1,0,1,0,0,1],
+            [1,1,1,1,1,1,0,1,1,0,1,1,1,0,0,0,1,0,1,0,1,1,0,1,1,1]
+        ];
+        const temporalExpectedEvents = (() => {
+            const out = [];
+            for (let c = 0; c < TEMPORAL_COLUMN_COUNT; c++) {
+                const seq = [];
+                for (let k = 0; k < 6; k++) seq.push(temporalDlpCodes[k + 1][c] - temporalDlpCodes[k][c]);
+                out.push(seq);
+            } return out;
+        })();
+        function temporalColumnCenterPatternX(col) { return TEMPORAL_X_MIN + (col + 0.5) / TEMPORAL_COLUMN_COUNT * (TEMPORAL_X_MAX - TEMPORAL_X_MIN); }
+        function temporalRowCenterPatternY(row) { return TEMPORAL_Y_MIN + (row + 0.5) / TEMPORAL_ROW_COUNT * (TEMPORAL_Y_MAX - TEMPORAL_Y_MIN); }
+        function temporalCameraPatternX(projectorX) { return projectorX; }
+        function temporalNearestColumn(patternX) { return Math.max(0, Math.min(TEMPORAL_COLUMN_COUNT - 1, Math.floor((patternX - TEMPORAL_X_MIN) / (TEMPORAL_X_MAX - TEMPORAL_X_MIN) * TEMPORAL_COLUMN_COUNT))); }
+        function temporalDotIntensity(patternX, patternY, frameIndex) {
+            if (patternX < TEMPORAL_X_MIN || patternX > TEMPORAL_X_MAX || patternY < TEMPORAL_Y_MIN || patternY > TEMPORAL_Y_MAX) return 0.0;
+            const col = temporalNearestColumn(patternX); const row = Math.round((patternY - TEMPORAL_Y_MIN) / (TEMPORAL_Y_MAX - TEMPORAL_Y_MIN) * (TEMPORAL_ROW_COUNT - 1));
+            if (row < 0 || row >= TEMPORAL_ROW_COUNT) return 0.0;
+            const cx = temporalColumnCenterPatternX(col); const cy = TEMPORAL_Y_MIN + (row + 0.5) / TEMPORAL_ROW_COUNT * (TEMPORAL_Y_MAX - TEMPORAL_Y_MIN);
+            const r2 = Math.pow((patternX - cx) / TEMPORAL_DOT_RX, 2) + Math.pow((patternY - cy) / TEMPORAL_DOT_RY, 2);
+            if (r2 > 1.0) return 0.0;
+            return temporalDlpCodes[Math.max(0, Math.min(6, frameIndex | 0))][col] ? Math.max(0.0, Math.min(1.0, 1.0 - (r2 - 0.72) / 0.28)) : 0.0;
+        }
+
+        function applyCameraSensorModel(rawIntensity, prevIntensity, u, v) {
+            const luxNorm = Math.max(0.01, state.cam.lux / 100.0);
+            const evsLuxNorm = Math.max(0.0, Math.min(1.0, (Math.log(Math.max(SENSOR_SPEC.evsMinLux, state.cam.lux)) - Math.log(SENSOR_SPEC.evsMinLux)) / (Math.log(SENSOR_SPEC.evsMaxLux) - Math.log(SENSOR_SPEC.evsMinLux))));
+            const rowIdx = v % rowNoisePattern.length, colIdx = u % colNoisePattern.length, pixIdx = (v % 256) * 256 + (u % 256);
+            const clamp01 = x => Math.max(0, Math.min(1, x));
+            if (deterministicReconstruction) return clamp01(rawIntensity * (0.25 + 0.75 * luxNorm));
+            const fullWellElectrons = SENSOR_SPEC.apsFullWellElectrons;
+            const darkElectrons = 1.2 + 7.5 * Math.pow(1.0 - Math.min(1.0, luxNorm), 1.35);
+            const readNoiseElectrons = SENSOR_SPEC.apsReadNoiseElectrons * (1.0 + 0.25 * Math.pow(1.0 - Math.min(1.0, luxNorm), 1.2));
+            function sampleAPS(intensity) {
+                const signalElectrons = Math.max(0.0, intensity) * luxNorm * fullWellElectrons;
+                const shotSigma = Math.sqrt(Math.max(1.0, signalElectrons + darkElectrons));
+                let electrons = signalElectrons + darkElectrons + gaussianRandom() * shotSigma + gaussianRandom() * readNoiseElectrons;
+                electrons += rowNoisePattern[rowIdx] * fullWellElectrons * 0.0025 + colNoisePattern[colIdx] * fullWellElectrons * 0.0020 + pixelUniformityPattern[pixIdx] * fullWellElectrons * 0.0015;
+                const analog = clamp01(electrons / fullWellElectrons);
+                return Math.round(analog * 255.0) / 255.0;
+            }
+
+            if (state.cam.sensorMode === 'evs') {
+                const eps = 0.01;
+                const currentSample = sampleAPS(rawIntensity), prevSample = sampleAPS(prevIntensity);
+                const thresholdMismatch = pixelUniformityPattern[pixIdx] * 0.012 + rowNoisePattern[rowIdx] * 0.004;
+                const dLog = Math.log(currentSample + eps) - Math.log(prevSample + eps);
+                const nominalThreshold = Math.log(1.0 + SENSOR_SPEC.evsContrastSensitivity);
+                const eventThreshold = Math.max(0.018, nominalThreshold + thresholdMismatch + 0.035 * Math.pow(1.0 - evsLuxNorm, 1.25));
+                const eventConfidence = Math.max(0.0, Math.min(1.0, (Math.abs(dLog) - eventThreshold) / (eventThreshold * 2.5)));
+                const logMin = Math.log(eps), logMax = Math.log(1.0 + eps);
+                let measured = (Math.log(currentSample + eps) - logMin) / (logMax - logMin);
+                measured = 0.5 + (measured - 0.5) * (0.45 + 0.55 * Math.sqrt(Math.max(0.04, evsLuxNorm)));
+                measured = measured * (0.55 + 0.45 * eventConfidence) + 0.5 * (1.0 - eventConfidence) * 0.45;
+                measured += gaussianRandom() * (0.006 + 0.030 * Math.pow(1.0 - evsLuxNorm, 1.25)) + gaussianRandom() * (0.004 + 0.020 * (1.0 - eventConfidence));
+                measured += rowNoisePattern[rowIdx] * (0.003 + 0.007 * (1.0 - evsLuxNorm)) + colNoisePattern[colIdx] * (0.003 + 0.007 * (1.0 - evsLuxNorm)) + pixelUniformityPattern[pixIdx] * (0.002 + 0.005 * (1.0 - evsLuxNorm));
+                return clamp01(measured);
+            }
+            return sampleAPS(rawIntensity);
+        }
+
+        function synthesizeCameraGrayFrame(currentPhase, useFlatObject = false, width = FULL_SENSOR_W, height = FULL_SENSOR_H) {
+            const w = width, h = height, frame = new Float32Array(w * h), mask = new Uint8Array(w * h), aspect = w / h;
+            for (let v = 0; v < h; v++) {
+                const ny = (v / h) * 2 - 1;
+                for (let u = 0; u < w; u++) {
+                    const nx = (u / w) * 2 - 1, hit = traceCameraPixelToSurface(nx, ny, aspect, useFlatObject), idx = v * w + u;
+                    if (!hit) { frame[idx] = 0.02; mask[idx] = 0; continue; }
+                    const z_height = useFlatObject ? 0.0 : hit.height;
+                    const projCoords = applyProjectorLensDistortionToCoords(projectorPatternCoordsFromSurfacePoint(hit.x, hit.y, z_height));
+                    let intensity;
+                    if (state.proj.projectionMode === 'doe') intensity = doeSpeckleIntensity(projCoords.x, projCoords.y);
+                    else if (state.proj.projectionMode === 'temporal') intensity = temporalDotIntensity(temporalCameraPatternX(projCoords.x), projCoords.y, Math.max(0, Math.min(6, Math.round(currentPhase || 0))));
+                    else {
+                        let fringeVal = Math.cos(projCoords.x * state.fringe.frequency * 3.0 + currentPhase);
+                        if (state.proj.lensDefocus) fringeVal *= Math.exp(-Math.pow(z_height - 0.3, 2) / 0.15);
+                        intensity = 0.5 + 0.5 * fringeVal;
+                    }
+                    if (!useFlatObject && state.proj.projectionMode !== 'temporal' && checkShadowOcclusion(hit.x, hit.y, z_height)) { frame[idx] = 0.05; mask[idx] = 0; }
+                    else {
+                        let prevIntensity;
+                        if (state.proj.projectionMode === 'doe') prevIntensity = doeSpeckleIntensity(projCoords.x + 0.015, projCoords.y);
+                        else if (state.proj.projectionMode === 'temporal') prevIntensity = temporalDotIntensity(temporalCameraPatternX(projCoords.x), projCoords.y, Math.max(0, Math.round(currentPhase || 0) - 1));
+                        else {
+                            let prevFringeVal = Math.cos(projCoords.x * state.fringe.frequency * 3.0 + currentPhase - 0.12);
+                            if (state.proj.lensDefocus) prevFringeVal *= Math.exp(-Math.pow(z_height - 0.3, 2) / 0.15);
+                            prevIntensity = 0.5 + 0.5 * prevFringeVal;
+                        }
+                        frame[idx] = applyCameraSensorModel(intensity, prevIntensity, u, v); mask[idx] = 1;
+                        if (state.cam.sensorMode === 'aps' && state.cam.lux < 8 && Math.random() < (8 - state.cam.lux) / 8 * 0.12) { mask[idx] = 0; frame[idx] = 0.02; }
+                    }
+                }
+            } return { frame, mask, width: w, height: h };
+        }
+
+        function drawCameraCCDView(currentPhase, preview = false) {
+            sensorCanvas.width = preview ? PREVIEW_SENSOR_W : FULL_SENSOR_W;
+            sensorCanvas.height = preview ? PREVIEW_SENSOR_H : FULL_SENSOR_H;
+            const w = sensorCanvas.width, h = sensorCanvas.height;
+            sCtx.fillStyle = '#05070f'; sCtx.fillRect(0, 0, w, h);
+            const imgData = sCtx.createImageData(w, h), data = imgData.data;
+            const frameData = synthesizeCameraGrayFrame(currentPhase, false, w, h);
+
+            const lux = state.cam.lux;
+            const evsLuxNorm = Math.max(0.0, Math.min(1.0, (Math.log(Math.max(SENSOR_SPEC.evsMinLux, lux)) - Math.log(SENSOR_SPEC.evsMinLux)) / (Math.log(SENSOR_SPEC.evsMaxLux) - Math.log(SENSOR_SPEC.evsMinLux))));
+            const stationaryEventProb = Math.min(0.05, SENSOR_SPEC.evsStationaryNoiseHz / SENSOR_SPEC.evsNominalNoiseFps * (1.0 + 0.45 * (1.0 - evsLuxNorm)));
+            const evsThreshold = Math.max(0.018, Math.log(1.0 + SENSOR_SPEC.evsContrastSensitivity) + 0.035 * Math.pow(1.0 - evsLuxNorm, 1.25));
+
+            let prevPhase = state.fringe.prevPhase !== undefined ? state.fringe.prevPhase : currentPhase - 0.12;
+            const prevFrameData = synthesizeCameraGrayFrame(prevPhase, false, w, h);
+
+            for (let i = 0; i < w * h; i++) {
+                const idx = i * 4;
+                if (!frameData.mask[i]) { data[idx] = 5; data[idx + 1] = 7; data[idx + 2] = 12; data[idx + 3] = 255; continue; }
+                const intensity = frameData.frame[i], prevIntensity = prevFrameData.frame[i];
+
+                if (state.cam.sensorMode === 'evs') {
+                    let eventPolarity = 0;
+                    if (state.proj.projectionMode === 'temporal') {
+                        const dI = intensity - prevIntensity; eventPolarity = dI > 0.35 ? 1 : (dI < -0.35 ? -1 : 0);
+                    } else {
+                        const dL = Math.log(intensity + 0.01) - Math.log(prevIntensity + 0.01); eventPolarity = dL > evsThreshold ? 1 : (dL < -evsThreshold ? -1 : 0);
+                    }
+                    if (eventPolarity > 0) { data[idx] = 245; data[idx + 1] = 40; data[idx + 2] = 40; }
+                    else if (eventPolarity < 0) { data[idx] = 40; data[idx + 1] = 120; data[idx + 2] = 245; }
+                    else {
+                        if (Math.random() < stationaryEventProb) {
+                            if (Math.random() > 0.5) { data[idx] = 180; data[idx + 1] = 40; data[idx + 2] = 40; }
+                            else { data[idx] = 40; data[idx + 1] = 120; data[idx + 2] = 180; }
+                        } else { data[idx] = 8; data[idx + 1] = 10; data[idx + 2] = 15; }
+                    } data[idx + 3] = 255;
+                } else {
+                    const cVal = Math.floor(intensity * 230 + 15);
+                    data[idx] = cVal; data[idx + 1] = cVal; data[idx + 2] = Math.floor(cVal * 1.15); data[idx + 3] = 255;
+                }
+            } sCtx.putImageData(imgData, 0, 0); state.fringe.prevPhase = currentPhase;
+        }
+
+        const phaseCanvas = document.getElementById('phaseAnalysisCanvas'); const pCtx = phaseCanvas.getContext('2d');
+        phaseCanvas.width = 256; phaseCanvas.height = 256;
+        let lastComputedWrappedPhase = null, lastComputedUnwrappedPhase = null, lastComputedHeightMap = null, capturedPhaseFrames = [];
+
+        function computePhaseFromFrames(frames, phases) {
+            const w = frames[0]?.width || FULL_SENSOR_W, h = frames[0]?.height || FULL_SENSOR_H, total = w * h, wrapped = new Float32Array(total), valid = new Uint8Array(total);
+            for (let i = 0; i < total; i++) {
+                let sinSum = 0.0, cosSum = 0.0, ok = 1, cMin = 1.0, cMax = 0.0;
+                for (let k = 0; k < frames.length; k++) {
+                    if (frames[k].mask[i] === 0) { ok = 0; break; }
+                    const I = frames[k].frame[i]; cMin = Math.min(cMin, I); cMax = Math.max(cMax, I);
+                    sinSum += I * Math.sin(phases[k]); cosSum += I * Math.cos(phases[k]);
+                }
+                if (!ok || cMax - cMin < 0.04) { wrapped[i] = -999.0; valid[i] = 0; }
+                else { wrapped[i] = Math.atan2(-sinSum, cosSum); valid[i] = 1; }
+            } return { wrapped, valid, width: w, height: h };
+        }
+
+        function medianFilterHeightMap(heightMap, w, h) {
+            const out = new Float32Array(heightMap.length), vals = [];
+            for (let v = 0; v < h; v++) {
+                for (let u = 0; u < w; u++) {
+                    const idx = v * w + u; vals.length = 0;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            const x = u + dx, y = v + dy; if (x < 0 || x >= w || y < 0 || y >= h) continue;
+                            const val = heightMap[y * w + x]; if (val !== -999.0 && Number.isFinite(val)) vals.push(val);
+                        }
+                    }
+                    if (vals.length < 3) out[idx] = heightMap[idx];
+                    else { vals.sort((a, b) => a - b); out[idx] = vals[Math.floor(vals.length / 2)]; }
+                }
+            } return out;
+        }
+
+        function edgeAwareSmoothHeightMap(heightMap, w, h, iterations = 1) {
+            let src = heightMap;
+            for (let iter = 0; iter < iterations; iter++) {
+                const out = new Float32Array(src.length).fill(-999.0);
+                for (let v = 0; v < h; v++) {
+                    for (let u = 0; u < w; u++) {
+                        const idx = v * w + u, center = src[idx];
+                        if (center === -999.0 || !Number.isFinite(center)) continue;
+                        let sum = 0.0, wsum = 0.0;
+                        for (let dy = -2; dy <= 2; dy++) {
+                            for (let dx = -2; dx <= 2; dx++) {
+                                const x = u + dx, y = v + dy; if (x < 0 || x >= w || y < 0 || y >= h) continue;
+                                const val = src[y * w + x]; if (val === -999.0 || !Number.isFinite(val) || Math.abs(val - center) > 0.22) continue;
+                                const ww = Math.exp(-(dx * dx + dy * dy) / 6.0) * Math.exp(-Math.pow(val - center, 2) / 0.018);
+                                sum += val * ww; wsum += ww;
+                            }
+                        } out[idx] = wsum > 0.0 ? (sum / wsum) : center;
+                    }
+                } src = out;
+            } return src;
+        }
+
+        function clearAlgorithmOutputs(message = '请点击按钮采集并重建') {
+            phaseCanvas.width = 320; phaseCanvas.height = 240; const total = phaseCanvas.width * phaseCanvas.height;
+            lastComputedWrappedPhase = new Float32Array(total).fill(-999.0); lastComputedUnwrappedPhase = new Float32Array(total).fill(-999.0); lastComputedHeightMap = new Float32Array(total).fill(-999.0);
+            pCtx.fillStyle = '#000000'; pCtx.fillRect(0, 0, phaseCanvas.width, phaseCanvas.height);
+            document.getElementById('lblPhaseState').innerText = message;
+            if (reconstructedPointsMesh) { pcScene.remove(reconstructedPointsMesh); reconstructedPointsMesh = null; }
+            document.getElementById('lblPointCount').innerText = 'Points: 0'; document.getElementById('lblRMSE').innerText = 'RMSE: --';
+        }
+
+        // 条纹模式：多步相移取包裹相位，参考平面锚定展开，再做相位到高度反解。
+        function calculatePhaseAndUnwrap() {
+            phaseCanvas.width = 320; phaseCanvas.height = 240;
+            const w = phaseCanvas.width, h = phaseCanvas.height, totalPixels = w * h;
+
+            const wrapped = new Float32Array(totalPixels).fill(-999.0);
+            const unwrapped = new Float32Array(totalPixels).fill(-999.0);
+            let heightMap = new Float32Array(totalPixels).fill(-999.0);
+
+            if (state.proj.projectionMode === 'doe') return clearAlgorithmOutputs('DOE 模式：请点击重建按钮做散斑直接拟合');
+            if (state.proj.projectionMode === 'temporal') return clearAlgorithmOutputs('点阵时序模式：请点击重建按钮投影并解码');
+
+            const methodCfg = getActivePhaseMethodConfig();
+            if (!capturedPhaseFrames || capturedPhaseFrames.length !== methodCfg.phases.length) return clearAlgorithmOutputs('条纹模式：请点击重建按钮采集多步相移帧');
+
+            const objPhase = computePhaseFromFrames(capturedPhaseFrames, methodCfg.phases);
+            const flatFrames = methodCfg.phases.map(p => synthesizeCameraGrayFrame(p, true));
+            const refPhase = computePhaseFromFrames(flatFrames, methodCfg.phases);
+
+            const aspect = w / h;
+            const measuredWrappedDiffs = new Float32Array(totalPixels).fill(-999.0);
+            const diffValid = new Uint8Array(totalPixels);
+            for (let i = 0; i < totalPixels; i++) {
+                if (!objPhase.valid[i] || !refPhase.valid[i]) continue;
+                measuredWrappedDiffs[i] = wrapToPi(refPhase.wrapped[i] - objPhase.wrapped[i]);
+                diffValid[i] = 1;
+            }
+            const absoluteDiffs = unwrapPhaseDiffFromReferencePlane(measuredWrappedDiffs, diffValid, w, h);
+
+            for (let i = 0; i < totalPixels; i++) {
+                if (!diffValid[i] || absoluteDiffs[i] === -999.0) continue;
+
+                const u = i % w;
+                const v = Math.floor(i / w);
+                const nx = (u / w) * 2 - 1;
+                const ny = (v / h) * 2 - 1;
+
+                const absolutePhaseDiff = absoluteDiffs[i];
+
+                const z_recon = solveHeightForAbsolutePhaseDiff(nx, ny, aspect, absolutePhaseDiff);
+
+                if (z_recon === -999.0 || !Number.isFinite(z_recon) || z_recon < -0.05 || z_recon > 1.8) continue;
+
+                wrapped[i] = objPhase.wrapped[i]; // UI 左侧显示物体的原始包裹相位
+                unwrapped[i] = absolutePhaseDiff;  // UI 右侧显示参考平面锚定后的连续相位差
+                heightMap[i] = z_recon;
+            }
+
+            heightMap = medianFilterHeightMap(heightMap, w, h);
+            heightMap = edgeAwareSmoothHeightMap(heightMap, w, h, 1);
+
+            lastComputedWrappedPhase = wrapped;
+            lastComputedUnwrappedPhase = unwrapped;
+            lastComputedHeightMap = heightMap;
+            renderPhaseCanvas();
+        }
+
+        function computeDOEDisparityByBlockMatching() {
+            phaseCanvas.width = 320; phaseCanvas.height = 240; const w = phaseCanvas.width, h = phaseCanvas.height, total = w * h;
+            const wrapped = new Float32Array(total).fill(-999.0), unwrapped = new Float32Array(total).fill(-999.0); let heightMap = new Float32Array(total).fill(-999.0);
+            deterministicReconstruction = true;
+            const target = synthesizeCameraGrayFrame(0, false);
+            deterministicReconstruction = false;
+            const blockRadius = 3, step = 2, aspect = w / h;
+            function patchErrorAtHeight(u, v, height) {
+                let err = 0.0, count = 0;
+                for (let by = -blockRadius; by <= blockRadius; by++) {
+                    for (let bx = -blockRadius; bx <= blockRadius; bx++) {
+                        const x = u + bx, y = v + by;
+                        if (x < 0 || x >= w || y < 0 || y >= h) continue;
+                        const idx = y * w + x; if (!target.mask[idx]) continue;
+                        const nx = (x / w) * 2 - 1, ny = (y / h) * 2 - 1;
+                        const p = pointOnCameraRayAtHeight(nx, ny, aspect, height); if (!p) continue;
+                        const coords = applyProjectorLensDistortionToCoords(projectorPatternCoordsFromSurfacePoint(p.x, p.y, height));
+                        const expected = doeSpeckleIntensity(coords.x, coords.y);
+                        const d = target.frame[idx] - expected;
+                        err += d * d; count++;
+                    }
+                }
+                return count < 18 ? Infinity : err / count;
+            }
+            function solveDOEHeightByDirectPattern(u, v) {
+                let bestH = -999.0, bestErr = Infinity, secondErr = Infinity;
+                for (let h0 = 0.0; h0 <= 1.8; h0 += 0.06) {
+                    const e = patchErrorAtHeight(u, v, h0);
+                    if (e < bestErr) { secondErr = bestErr; bestErr = e; bestH = h0; }
+                    else if (e < secondErr) secondErr = e;
+                }
+                if (!Number.isFinite(bestErr)) return -999.0;
+                let lo = Math.max(0.0, bestH - 0.09), hi = Math.min(1.8, bestH + 0.09);
+                const gr = 0.6180339887498949;
+                let c = hi - (hi - lo) * gr, d = lo + (hi - lo) * gr, fc = patchErrorAtHeight(u, v, c), fd = patchErrorAtHeight(u, v, d);
+                for (let i = 0; i < 18; i++) {
+                    if (fc < fd) { hi = d; d = c; fd = fc; c = hi - (hi - lo) * gr; fc = patchErrorAtHeight(u, v, c); }
+                    else { lo = c; c = d; fc = fd; d = lo + (hi - lo) * gr; fd = patchErrorAtHeight(u, v, d); }
+                }
+                const refinedH = 0.5 * (lo + hi), refinedErr = patchErrorAtHeight(u, v, refinedH);
+                return refinedErr > 0.010 ? -999.0 : refinedH;
+            }
+            for (let v = blockRadius; v < h - blockRadius; v += step) {
+                for (let u = blockRadius; u < w - blockRadius; u += step) {
+                    if (target.mask[v * w + u] === 0) continue;
+                    const z_recon = solveDOEHeightByDirectPattern(u, v); if (!Number.isFinite(z_recon) || z_recon < -0.02 || z_recon > 1.8) continue;
+                    for (let yy = 0; yy < step; yy++) {
+                        for (let xx = 0; xx < step; xx++) {
+                            const fidx = (v + yy) * w + (u + xx); wrapped[fidx] = z_recon / 1.8; unwrapped[fidx] = z_recon / 1.8; heightMap[fidx] = z_recon;
+                        }
+                    }
+                }
+            }
+            heightMap = edgeAwareSmoothHeightMap(medianFilterHeightMap(heightMap, w, h), w, h, 1);
+            lastComputedWrappedPhase = wrapped; lastComputedUnwrappedPhase = unwrapped; lastComputedHeightMap = heightMap; renderPhaseCanvas();
+        }
+
+        function synthesizeTemporalBinaryFrame(frameIndex, useFlatObject = false) {
+            const w = 320, h = 240, frame = new Float32Array(w * h), mask = new Uint8Array(w * h), aspect = w / h;
+            for (let v = 0; v < h; v++) {
+                const ny = (v / h) * 2 - 1;
+                for (let u = 0; u < w; u++) {
+                    const hit = traceCameraPixelToSurface((u / w) * 2 - 1, ny, aspect, useFlatObject), idx = v * w + u;
+                    if (!hit) { frame[idx] = 0.0; mask[idx] = 0; continue; }
+                    const projCoords = applyProjectorLensDistortionToCoords(projectorPatternCoordsFromSurfacePoint(hit.x, hit.y, useFlatObject ? 0.0 : hit.height));
+                    frame[idx] = temporalDotIntensity(temporalCameraPatternX(projCoords.x), projCoords.y, frameIndex) > 0.45 ? 1.0 : 0.0; mask[idx] = 1;
+                }
+            } return { frame, mask, width: w, height: h };
+        }
+        function computeTemporalEventFrames(binaryFrames) {
+            const w = binaryFrames[0].width, h = binaryFrames[0].height, total = w * h, eventFrames = [], luxNorm = Math.max(0.01, state.cam.lux / 100.0);
+            const evsLuxNorm = Math.max(0.0, Math.min(1.0, (Math.log(Math.max(SENSOR_SPEC.evsMinLux, state.cam.lux)) - Math.log(SENSOR_SPEC.evsMinLux)) / (Math.log(SENSOR_SPEC.evsMaxLux) - Math.log(SENSOR_SPEC.evsMinLux))));
+            const missProbBase = state.cam.sensorMode === 'evs' ? 0.010 + 0.035 * (1.0 - evsLuxNorm) : 0.045 + 0.18 * (1.0 - luxNorm);
+            const falseProbBase = state.cam.sensorMode === 'evs' ? Math.min(0.04, SENSOR_SPEC.evsStationaryNoiseHz / SENSOR_SPEC.evsNominalNoiseFps * (1.0 + 0.45 * (1.0 - evsLuxNorm))) : 0.004 + 0.020 * (1.0 - luxNorm);
+            for (let k = 0; k < 6; k++) {
+                const events = new Int8Array(total), valid = new Uint8Array(total), f0 = binaryFrames[k], f1 = binaryFrames[k + 1];
+                for (let i = 0; i < total; i++) {
+                    if (!f0.mask[i] || !f1.mask[i]) { valid[i] = 0; events[i] = 0; continue; }
+                    let e = (f1.frame[i] - f0.frame[i]) > 0.5 ? 1 : ((f1.frame[i] - f0.frame[i]) < -0.5 ? -1 : 0);
+                    if (e !== 0 && Math.random() < missProbBase) e = 0; else if (e === 0 && Math.random() < falseProbBase) e = Math.random() > 0.5 ? 1 : -1;
+                    events[i] = e; valid[i] = 1;
+                } eventFrames.push({ events, valid, width: w, height: h });
+            } return eventFrames;
+        }
+        function temporalMajorityEventAt(eventFrame, u, v, w, h) {
+            let pos = 0, neg = 0, zero = 0, count = 0;
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+                const x = u + dx, y = v + dy; if (x >= 0 && x < w && y >= 0 && y < h && eventFrame.valid[y * w + x]) {
+                    const e = eventFrame.events[y * w + x]; if (e > 0) pos++; else if (e < 0) neg++; else zero++; count++;
+                }
+            } return count < 4 ? 0 : (pos >= 2 && pos >= neg + 1 ? 1 : (neg >= 2 && neg >= pos + 1 ? -1 : 0));
+        }
+        function temporalMajorityBitAt(binaryFrame, u, v, w, h) {
+            let on = 0, off = 0, count = 0;
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+                const x = u + dx, y = v + dy;
+                if (x >= 0 && x < w && y >= 0 && y < h && binaryFrame.mask[y * w + x]) {
+                    if (binaryFrame.frame[y * w + x] > 0.5) on++; else off++;
+                    count++;
+                }
+            }
+            return count < 4 ? -1 : (on >= off ? 1 : 0);
+        }
+        function computeTemporalCodedDotReconstruction() {
+            phaseCanvas.width = 320; phaseCanvas.height = 240; const w = phaseCanvas.width, h = phaseCanvas.height, total = w * h;
+            const decoded = new Float32Array(total).fill(-999.0), unwrapped = new Float32Array(total).fill(-999.0), heightMap = new Float32Array(total).fill(-999.0);
+            deterministicReconstruction = true;
+            const binaryFrames = []; for (let k = 0; k < 7; k++) binaryFrames.push(synthesizeTemporalBinaryFrame(k, false));
+            deterministicReconstruction = false;
+            const colMap = new Int16Array(total).fill(-1), activityMap = new Uint8Array(total);
+            function temporalMajorityEventBetweenFrames(frame0, frame1, u, v) {
+                let pos = 0, neg = 0, zero = 0, count = 0;
+                for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+                    const x = u + dx, y = v + dy;
+                    if (x < 0 || x >= w || y < 0 || y >= h) continue;
+                    const idx = y * w + x;
+                    if (!frame0.mask[idx] || !frame1.mask[idx]) continue;
+                    const delta = frame1.frame[idx] - frame0.frame[idx];
+                    if (delta > 0.5) pos++;
+                    else if (delta < -0.5) neg++;
+                    else zero++;
+                    count++;
+                }
+                if (count < 4) return 99;
+                if (pos >= 2 && pos >= neg + 1 && pos >= zero) return 1;
+                if (neg >= 2 && neg >= pos + 1 && neg >= zero) return -1;
+                return 0;
+            }
+            for (let v = 2; v < h - 2; v++) {
+                for (let u = 2; u < w - 2; u++) {
+                    const idx = v * w + u; let confidence = 0; const code = [0,0,0,0,0,0];
+                    let hasProjectedDot = false;
+                    for (let k = 0; k < 7; k++) {
+                        const activeBit = temporalMajorityBitAt(binaryFrames[k], u, v, w, h);
+                        if (activeBit > 0) { hasProjectedDot = true; break; }
+                    }
+                    if (!hasProjectedDot) continue;
+                    for (let k = 0; k < 6; k++) {
+                        const ev = temporalMajorityEventBetweenFrames(binaryFrames[k], binaryFrames[k + 1], u, v);
+                        if (ev === 99) { confidence = -1; break; }
+                        code[k] = ev; confidence++;
+                    }
+                    if (confidence < 6) continue;
+                    let bestCol = -1, bestDist = 999, secondDist = 999;
+                    for (let c = 0; c < TEMPORAL_COLUMN_COUNT; c++) {
+                        let d = 0; for (let i = 0; i < 6; i++) if (code[i] !== temporalExpectedEvents[c][i]) d++;
+                        if (d < bestDist) { secondDist = bestDist; bestDist = d; bestCol = c; } else if (d < secondDist) secondDist = d;
+                    }
+                    if (bestCol >= 0 && bestDist <= 0 && secondDist - bestDist >= 1) { colMap[idx] = bestCol; activityMap[idx] = confidence; }
+                }
+            }
+            const visited = new Uint8Array(total), dots = [];
+            for (let sy = 1; sy < h - 1; sy++) {
+                for (let sx = 1; sx < w - 1; sx++) {
+                    if (visited[sy * w + sx] || colMap[sy * w + sx] < 0) continue;
+                    const qx = [sx], qy = [sy], pixels = [], hist = new Int32Array(TEMPORAL_COLUMN_COUNT); let sumX = 0, sumY = 0, sumW = 0, head = 0; visited[sy * w + sx] = 1;
+                    while (head < qx.length) {
+                        const x = qx[head], y = qy[head++]; const idx = y * w + x, col = colMap[idx]; if (col < 0) continue;
+                        const weight = Math.max(1, activityMap[idx]); pixels.push(idx); hist[col] += weight; sumX += x * weight; sumY += y * weight; sumW += weight;
+                        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+                            const nx = x + dx, ny = y + dy; if (nx >= 1 && nx < w - 1 && ny >= 1 && ny < h - 1 && !visited[ny * w + nx] && colMap[ny * w + nx] >= 0) {
+                                visited[ny * w + nx] = 1; qx.push(nx); qy.push(ny);
+                            }
+                        }
+                    }
+                    if (pixels.length >= 3 && pixels.length <= 520 && sumW > 0) {
+                        let bestCol = -1, bestVotes = -1, totalVotes = 0;
+                        for (let c = 0; c < TEMPORAL_COLUMN_COUNT; c++) { totalVotes += hist[c]; if (hist[c] > bestVotes) { bestVotes = hist[c]; bestCol = c; } }
+                        if (bestCol >= 0 && totalVotes > 0 && bestVotes / totalVotes >= 0.45) dots.push({ pixels, col: bestCol, cx: sumX / sumW, cy: sumY / sumW });
+                    }
+                }
+            }
+            function temporalPatternErrorAtPixel(u, v, col, row, height, w, h) {
+                const aspect = w / h, nx = (u / w) * 2 - 1, ny = (v / h) * 2 - 1;
+                const p = pointOnCameraRayAtHeight(nx, ny, aspect, height); if (!p) return Infinity;
+                const coords = applyProjectorLensDistortionToCoords(projectorPatternCoordsFromSurfacePoint(p.x, p.y, height));
+                const dx = coords.x - temporalColumnCenterPatternX(col), dy = coords.y - temporalRowCenterPatternY(row);
+                return dx * dx + dy * dy;
+            }
+            function heightFromTemporalDotAtPixel(u, v, col, row, w, h) {
+                let lo = 0.0, hi = 1.8, gr = 0.6180339887498949;
+                let c = hi - (hi - lo) * gr, d = lo + (hi - lo) * gr;
+                let fc = temporalPatternErrorAtPixel(u, v, col, row, c, w, h), fd = temporalPatternErrorAtPixel(u, v, col, row, d, w, h);
+                for (let i = 0; i < 26; i++) {
+                    if (fc < fd) { hi = d; d = c; fd = fc; c = hi - (hi - lo) * gr; fc = temporalPatternErrorAtPixel(u, v, col, row, c, w, h); }
+                    else { lo = c; c = d; fc = fd; d = lo + (hi - lo) * gr; fd = temporalPatternErrorAtPixel(u, v, col, row, d, w, h); }
+                }
+                const bestH = 0.5 * (lo + hi), err = temporalPatternErrorAtPixel(u, v, col, row, bestH, w, h);
+                return (!Number.isFinite(bestH) || err > 0.035) ? -999.0 : bestH;
+            }
+            function temporalColumnErrorAtPixel(u, v, col, height, w, h) {
+                const aspect = w / h, nx = (u / w) * 2 - 1, ny = (v / h) * 2 - 1;
+                const p = pointOnCameraRayAtHeight(nx, ny, aspect, height); if (!p) return Infinity;
+                const coords = applyProjectorLensDistortionToCoords(projectorPatternCoordsFromSurfacePoint(p.x, p.y, height));
+                const dx = coords.x - temporalColumnCenterPatternX(col);
+                return dx * dx;
+            }
+            function heightFromTemporalColumnAtPixel(u, v, col, w, h) {
+                let lo = 0.0, hi = 1.8, gr = 0.6180339887498949;
+                let c = hi - (hi - lo) * gr, d = lo + (hi - lo) * gr;
+                let fc = temporalColumnErrorAtPixel(u, v, col, c, w, h), fd = temporalColumnErrorAtPixel(u, v, col, d, w, h);
+                for (let i = 0; i < 28; i++) {
+                    if (fc < fd) { hi = d; d = c; fd = fc; c = hi - (hi - lo) * gr; fc = temporalColumnErrorAtPixel(u, v, col, c, w, h); }
+                    else { lo = c; c = d; fc = fd; d = lo + (hi - lo) * gr; fd = temporalColumnErrorAtPixel(u, v, col, d, w, h); }
+                }
+                const bestH = 0.5 * (lo + hi), err = temporalColumnErrorAtPixel(u, v, col, bestH, w, h);
+                return (!Number.isFinite(bestH) || err > 0.020) ? -999.0 : bestH;
+            }
+            function estimateTemporalRowForDot(u, v, col, w, h) {
+                let bestRow = -1, bestErr = Infinity;
+                for (let row = 0; row < TEMPORAL_ROW_COUNT; row++) {
+                    const z = heightFromTemporalDotAtPixel(u, v, col, row, w, h);
+                    if (z === -999.0) continue;
+                    const err = temporalPatternErrorAtPixel(u, v, col, row, z, w, h);
+                    if (err < bestErr) { bestErr = err; bestRow = row; }
+                }
+                return bestRow;
+            }
+            let accepted = 0;
+            for (const dot of dots) {
+                const cu = Math.round(dot.cx), cv = Math.round(dot.cy); if (cu < 0 || cu >= w || cv < 0 || cv >= h) continue;
+                const dotRow = estimateTemporalRowForDot(cu, cv, dot.col, w, h);
+                let z_recon = dotRow >= 0 ? heightFromTemporalDotAtPixel(cu, cv, dot.col, dotRow, w, h) : -999.0;
+                if (z_recon === -999.0) z_recon = heightFromTemporalColumnAtPixel(cu, cv, dot.col, w, h);
+                if (!Number.isFinite(z_recon) || z_recon < 0.015 || z_recon > 1.8) continue;
+                for (const idx of dot.pixels) { decoded[idx] = (dot.col + 1) * 10.0; unwrapped[idx] = dot.col; }
+                for (const idx of dot.pixels) {
+                    const px = idx % w, py = Math.floor(idx / w);
+                    const d2 = (px - dot.cx) * (px - dot.cx) + (py - dot.cy) * (py - dot.cy);
+                    if (d2 <= 2.25) heightMap[idx] = z_recon;
+                }
+                heightMap[cv * w + cu] = z_recon;
+                accepted++;
+            }
+            lastComputedWrappedPhase = decoded; lastComputedUnwrappedPhase = unwrapped; lastComputedHeightMap = heightMap; renderPhaseCanvas();
+            if (accepted === 0) showNotification('点阵解码失败', '未找到可靠的时序编码散斑点。', 'error');
+        }
+
+        function renderPhaseCanvas() {
+            if (!lastComputedWrappedPhase) return;
+            const w = phaseCanvas.width, h = phaseCanvas.height, imgData = pCtx.createImageData(w, h), data = imgData.data, isWrapped = state.phaseStateView === 'wrapped';
+            
+            if (state.proj.projectionMode === 'doe') document.getElementById('lblPhaseState').innerText = "DOE 散斑直接拟合高度图";
+            else if (state.proj.projectionMode === 'temporal') document.getElementById('lblPhaseState').innerText = "点阵时序解码质心图（非解相）";
+            else document.getElementById('lblPhaseState').innerText = isWrapped ? "包裹相位范围: [-π, π]" : "解包裹绝对相位差";
+
+            for (let i = 0; i < w * h; i++) {
+                const idx = i * 4, val = isWrapped ? lastComputedWrappedPhase[i] : lastComputedUnwrappedPhase[i];
+                if (val === -999.0) { data[idx] = 10; data[idx + 1] = 15; data[idx + 2] = 25; data[idx + 3] = 255; continue; }
+                let colorIntensity = 0;
+                if (state.proj.projectionMode === 'doe') {
+                    colorIntensity = Math.floor(Math.max(0, Math.min(1, val * 1.8)) * 255);
+                    data[idx] = Math.floor(colorIntensity * 0.2); data[idx + 1] = Math.floor(colorIntensity * 0.9); data[idx + 2] = 255 - Math.floor(colorIntensity * 0.4);
+                } else if (state.proj.projectionMode === 'temporal') {
+                    const colNorm = Math.max(0, Math.min(1, val / 260.0));
+                    data[idx] = Math.floor(40 + colNorm * 215); data[idx + 1] = Math.floor(230 - colNorm * 150); data[idx + 2] = Math.floor(80 + (1.0 - colNorm) * 150);
+                } else if (isWrapped) {
+                    colorIntensity = Math.floor(((val + Math.PI) / (Math.PI * 2)) * 255);
+                    data[idx] = colorIntensity; data[idx + 1] = colorIntensity; data[idx + 2] = Math.floor(colorIntensity * 0.5);
+                } else {
+                    // 连续相位差范围较宽，拉宽梯度域以显示平滑点云图。
+                    const maxAbsolutePhase = state.fringe.frequency * 3.0 * 2.0; 
+                    const normalizedVal = Math.max(0, Math.min(1.0, (val + 10.0) / maxAbsolutePhase));
+                    colorIntensity = Math.floor(normalizedVal * 255);
+                    data[idx] = Math.floor(colorIntensity * 0.3); data[idx + 1] = colorIntensity; data[idx + 2] = Math.floor(colorIntensity * 0.9);
+                } data[idx + 3] = 255;
+            } pCtx.putImageData(imgData, 0, 0);
+        }
+
+        const pcContainer = document.getElementById('pointCloudContainer'), pcScene = new THREE.Scene();
+        pcScene.background = new THREE.Color(0x020408);
+        const pcCamera = new THREE.PerspectiveCamera(40, pcContainer.clientWidth / pcContainer.clientHeight, 0.1, 20);
+        pcCamera.position.set(0, 0, 4.5);
+        const pcRenderer = new THREE.WebGLRenderer({ canvas: document.getElementById('reconstructedCloudCanvas'), antialias: true });
+        pcRenderer.setSize(pcContainer.clientWidth, pcContainer.clientHeight); pcRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_RENDER_PIXEL_RATIO));
+        const pcControls = new THREE.OrbitControls(pcCamera, pcRenderer.domElement); pcControls.enableDamping = true; pcControls.dampingFactor = 0.05;
+        let reconstructedPointsMesh = null;
+
+        function updateColorbarUI() {
+            const titleEl = document.getElementById('lblColorbarTitle'), gradientEl = document.getElementById('divColorbarGradient'), minEl = document.getElementById('lblColorbarMin'), maxEl = document.getElementById('lblColorbarMax');
+            if (!titleEl || !gradientEl || !minEl || !maxEl) return;
+            if (state.pcColorMode === 'error') {
+                titleEl.innerText = "重建误差色标"; gradientEl.style.background = "linear-gradient(to right, #00ff1a, #ffff1a, #ff001a)";
+                minEl.innerText = "0 mm"; maxEl.innerText = "150 mm";
+            } else {
+                titleEl.innerText = "深度高度色标"; gradientEl.style.background = "linear-gradient(to right, hsl(198, 95%, 45%), hsl(230, 95%, 50%), hsl(263, 95%, 55%))";
+                minEl.innerText = "-0.2 m"; maxEl.innerText = "1.3 m";
+            }
+        }
+
+        function rebuild3DPointCloud() {
+            if (reconstructedPointsMesh) pcScene.remove(reconstructedPointsMesh);
+            if (!lastComputedHeightMap) { document.getElementById('lblPointCount').innerText = 'Points: 0'; document.getElementById('lblRMSE').innerText = 'RMSE: --'; return; }
+            const w = phaseCanvas.width, h = phaseCanvas.height, positions = [], colors = [], colorHelper = new THREE.Color(), aspect = w / h;
+            let sumSquareError = 0, activePointCount = 0;
+
+            for (let v = 0; v < h; v += 1) {
+                const ny = (v / h) * 2 - 1;
+                for (let u = 0; u < w; u += 1) {
+                    const idx = v * w + u, z_rec = lastComputedHeightMap[idx];
+                    if (z_rec === -999.0 || !Number.isFinite(z_rec) || z_rec < -0.2 || z_rec > 1.8) continue;
+                    const nx = (u / w) * 2 - 1, hit = pointOnCameraRayAtHeight(nx, ny, aspect, z_rec); if (!hit) continue;
+                    const calcX = hit.x, calcY = hit.y;
+                    const z_gt = getSurfaceHeightWorld(calcX, calcY), errorZ = Math.abs(z_gt - z_rec);
+                    positions.push(calcX, calcY, z_rec); sumSquareError += errorZ * errorZ; activePointCount++;
+                    if (state.pcColorMode === 'error') {
+                        const errInMm = errorZ * 1000, t = Math.min(1.0, errInMm / 200.0), r = t < 0.5 ? t * 2 : 1.0, g = t < 0.5 ? 1.0 : (1.0 - t) * 2, b = 0.1;
+                        colorHelper.setRGB(r, g, b);
+                    } else {
+                        const normalizedZ = Math.max(0, Math.min(1, (z_rec + 0.2) / 1.7)); colorHelper.setHSL(0.55 + normalizedZ * 0.18, 0.95, 0.45 + normalizedZ * 0.1);
+                    } colors.push(colorHelper.r, colorHelper.g, colorHelper.b);
+                }
+            }
+            const pGeom = new THREE.BufferGeometry(); pGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); pGeom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            const pMat = new THREE.PointsMaterial({ size: state.proj.projectionMode === 'temporal' ? 0.075 : (state.proj.projectionMode === 'doe' ? 0.065 : 0.05), vertexColors: true, transparent: true, opacity: 0.92, sizeAttenuation: true });
+            reconstructedPointsMesh = new THREE.Points(pGeom, pMat); pcScene.add(reconstructedPointsMesh);
+            document.getElementById('lblPointCount').innerText = `Points: ${activePointCount}`;
+            document.getElementById('lblRMSE').innerText = activePointCount > 0 ? `RMSE: ${(Math.sqrt(sumSquareError / activePointCount) * 1000).toFixed(2)} mm` : 'RMSE: --';
+            updateColorbarUI();
+        }
+
+        const phaseMethodConfigs = {
+            '3step': { label: '3步快速', steps: 3, phases: [0, 2*Math.PI/3, 4*Math.PI/3], angleLabels: ['0°', '120°', '240°'], desc: '当前采用 3 步相移：0°、120°、240°，采集速度最快，但抗噪能力较弱。' },
+            '4step': { label: '4步标准', steps: 4, phases: [0, Math.PI/2, Math.PI, 3*Math.PI/2], angleLabels: ['0°', '90°', '180°', '270°'], desc: '当前采用 4 步相移：0°、90°、180°、270°，精度和速度较均衡。' },
+            '5step': { label: '5步抗噪', steps: 5, phases: [0, 2*Math.PI/5, 4*Math.PI/5, 6*Math.PI/5, 8*Math.PI/5], angleLabels: ['0°', '72°', '144°', '216°', '288°'], desc: '当前采用 5 步相移：0°、72°、144°、216°、288°，抗噪能力更强。' }
+        };
+        function getActivePhaseMethodConfig() { return phaseMethodConfigs[state.phaseMethod] || phaseMethodConfigs['4step']; }
+
+        function updateProjectionModeButtons() {
+            const act = 'py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition', inact = 'py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition';
+            document.getElementById('btnProjFringe').className = state.proj.projectionMode === 'fringe' ? act : inact;
+            document.getElementById('btnProjDOE').className = state.proj.projectionMode === 'doe' ? act : inact;
+            document.getElementById('btnProjTemporal').className = state.proj.projectionMode === 'temporal' ? act : inact;
+        }
+        function updatePhaseButtonsForProjectionMode() {
+            ['btnPhase3', 'btnPhase4', 'btnPhase5'].forEach(id => {
+                const btn = document.getElementById(id); if (!btn) return;
+                if (state.proj.projectionMode !== 'fringe') { btn.disabled = true; btn.classList.add('opacity-40', 'cursor-not-allowed'); }
+                else { btn.disabled = false; btn.classList.remove('opacity-40', 'cursor-not-allowed'); }
+            });
+        }
+        function updateDockLayoutForProjectionMode() {
+            const bottomDock = document.getElementById('bottomDock'), phasePanel = document.getElementById('phaseContainer');
+            if (!bottomDock || !phasePanel) return;
+            if (state.proj.projectionMode === 'temporal') {
+                bottomDock.className = 'h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-2 gap-3 p-3 relative z-10 transition-all duration-300 overflow-hidden';
+                phasePanel.className = 'hidden';
+            } else {
+                bottomDock.className = 'h-[280px] bg-slate-950 border-t border-slate-800 grid grid-cols-3 gap-3 p-3 relative z-10 transition-all duration-300 overflow-hidden';
+                phasePanel.className = 'bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300';
+            } setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+        }
+        function setProjectionMode(mode) {
+            state.proj.projectionMode = mode; updateProjectionModeButtons(); updatePhaseButtonsForProjectionMode(); updateDockLayoutForProjectionMode();
+            updateProjectorMatrix(); drawCameraCCDView(state.fringe.phase);
+            clearAlgorithmOutputs(mode === 'doe' ? 'DOE 模式：请点击重建按钮做散斑直接拟合' : (mode === 'temporal' ? '点阵时序模式：仅显示拍摄图和点云' : '条纹模式：请点击重建按钮采集多步相移帧'));
+            showNotification('投影模式已切换', `当前模式：${mode === 'doe' ? 'VCSEL + DOE 散斑模式' : (mode === 'temporal' ? '点阵时序编码结构光模式' : 'DLP 有源条纹模式')}。`, 'success');
+        }
+
+        function recomputeCurrentMode() {
+            if (state.proj.projectionMode === 'doe') {
+                updateProjectorMatrix(); drawCameraCCDView(0); computeDOEDisparityByBlockMatching(); rebuild3DPointCloud(); showNotification('散斑算法完成', '已通过标定散斑直接拟合生成点云。', 'success');
+            } else if (state.proj.projectionMode === 'temporal') {
+                updateProjectorMatrix(); drawCameraCCDView(0); computeTemporalCodedDotReconstruction(); rebuild3DPointCloud(); showNotification('点阵时序解码完成', '已按照论文的 7 帧 DLP 与 6 帧 EVS 事件码完成解码和三角重建。', 'success');
+            } else triggerFourStepPhaseAcquisition();
+            const rb = document.getElementById('btnRecomputeCurrent');
+            if (rb) { rb.className = "w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] rounded border border-slate-700 transition flex items-center justify-center gap-1.5"; rb.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 重新计算当前模式`; lucide.createIcons(); }
+        }
+        function markRecomputeNeeded() {
+            const runBtn = document.getElementById('btnRunReconstruction'), rb = document.getElementById('btnRecomputeCurrent');
+            if (state.proj.projectionMode === 'doe') {
+                if (rb) { rb.className = "w-full py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-[11px] rounded border border-amber-400 transition flex items-center justify-center gap-1.5"; rb.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5 animate-spin"></i> 参数已变化，重新计算 DOE 散斑`; lucide.createIcons(); }
+            } else if (runBtn) { runBtn.innerHTML = `<i data-lucide="refresh-cw" class="w-4 h-4 animate-spin-slow"></i> 参数已变化，请重新重构`; lucide.createIcons(); }
+        }
+
+        function updatePhaseMethodButtons() {
+            const map = { '3step': 'btnPhase3', '4step': 'btnPhase4', '5step': 'btnPhase5' };
+            Object.entries(map).forEach(([method, btnId]) => {
+                const btn = document.getElementById(btnId); if (!btn) return;
+                btn.className = state.phaseMethod === method ? 'py-1 px-2 bg-indigo-600 border border-indigo-500 rounded text-[10px] font-bold text-white transition' : 'py-1 px-2 bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition';
+            });
+            const desc = document.getElementById('phaseMethodDesc'); if (desc) desc.innerText = getActivePhaseMethodConfig().desc;
+        }
+        function setPhaseMethod(method) { state.phaseMethod = method; capturedPhaseFrames = []; updatePhaseMethodButtons(); clearAlgorithmOutputs('条纹模式：相移步数已改变，请重新采集并重建'); }
+
+        let isAcquiring = false;
+        async function triggerFourStepPhaseAcquisition() {
+            if (isAcquiring) return; isAcquiring = true; const runBtn = document.getElementById('btnRunReconstruction');
+            if (state.proj.projectionMode === 'doe') {
+                runBtn.disabled = true; runBtn.classList.add('opacity-50'); runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在执行 DOE 散斑直接拟合...`; lucide.createIcons();
+                state.fringe.phase = 0; updateProjectorMatrix(); drawCameraCCDView(0);
+                await new Promise(res => setTimeout(res, 80)); computeDOEDisparityByBlockMatching(); rebuild3DPointCloud();
+                runBtn.disabled = false; runBtn.classList.remove('opacity-50'); runBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-emerald-400"></i> DOE 点云重建已就绪`; lucide.createIcons();
+                isAcquiring = false; showNotification("散斑重建完成", "DOE 散斑已生成点云。", "success"); return;
+            }
+            if (state.proj.projectionMode === 'temporal') {
+                runBtn.disabled = true; runBtn.classList.add('opacity-50');
+                for (let k = 0; k < 7; k++) {
+                    state.fringe.phase = k; updateProjectorMatrix(); drawCameraCCDView(k);
+                    runBtn.innerHTML = `<i data-lucide="binary" class="w-4 h-4 animate-bounce"></i> 正在投影第 ${k + 1}/7 幅点阵编码图...`; lucide.createIcons(); await new Promise(res => setTimeout(res, 130));
+                }
+                computeTemporalCodedDotReconstruction(); rebuild3DPointCloud();
+                runBtn.disabled = false; runBtn.classList.remove('opacity-50'); runBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-emerald-400"></i> 点阵时序点云已就绪`; lucide.createIcons();
+                isAcquiring = false; showNotification("点阵时序重建完成", "已按论文时序编码方法完成三角重建。", "success"); return;
+            }
+            runBtn.disabled = true; runBtn.classList.add('opacity-50');
+            const methodCfg = getActivePhaseMethodConfig(), phases = methodCfg.phases, angleLabels = methodCfg.angleLabels; capturedPhaseFrames = [];
+            for (let i = 0; i < phases.length; i++) {
+                runBtn.innerHTML = `<i data-lucide="camera" class="w-4 h-4 animate-bounce"></i> 正在采集第 ${i + 1}/${phases.length} 帧 (${angleLabels[i]})...`; lucide.createIcons();
+                state.fringe.phase = phases[i]; updateProjectorMatrix(); drawCameraCCDView(phases[i]); capturedPhaseFrames.push(synthesizeCameraGrayFrame(phases[i], false));
+                await new Promise(res => setTimeout(res, 260));
+            }
+            calculatePhaseAndUnwrap(); rebuild3DPointCloud();
+            runBtn.disabled = false; runBtn.classList.remove('opacity-50'); runBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-emerald-400"></i> 点云重建已就绪`; lucide.createIcons();
+            isAcquiring = false; showNotification("重建成功", `${getActivePhaseMethodConfig().label} 已完成参考平面相位展开与三角重建，点云已生成。`, "success");
+        }
+        document.getElementById('btnRunReconstruction').addEventListener('click', triggerFourStepPhaseAcquisition);
+        document.getElementById('btnRecomputeCurrent').addEventListener('click', recomputeCurrentMode);
+        document.getElementById('btnPhase3').addEventListener('click', () => setPhaseMethod('3step'));
+        document.getElementById('btnPhase4').addEventListener('click', () => setPhaseMethod('4step'));
+        document.getElementById('btnPhase5').addEventListener('click', () => setPhaseMethod('5step'));
+        document.getElementById('btnProjFringe').addEventListener('click', () => setProjectionMode('fringe'));
+        document.getElementById('btnProjDOE').addEventListener('click', () => setProjectionMode('doe'));
+        document.getElementById('btnProjTemporal').addEventListener('click', () => setProjectionMode('temporal'));
+
+        function selectObject(type) {
+            state.activeObjectType = type;
+            const act = "py-1.5 px-2 bg-indigo-600 border border-indigo-500 rounded text-xs font-semibold text-white transition", inact = "py-1.5 px-2 bg-slate-800 border border-slate-700 rounded text-xs font-semibold text-slate-200 hover:bg-slate-700 transition";
+            document.getElementById('btnObjSphere').className = type === 'sphere' ? act : inact;
+            document.getElementById('btnObjFace').className = type === 'face' ? act : inact;
+            document.getElementById('btnObjPeaks').className = type === 'peaks' ? act : inact;
+            updateTargetObject(); if (targetShaderMaterial) targetShaderMaterial.uniforms.activeObjectType.value = type === 'sphere' ? 0 : (type === 'face' ? 1 : 2);
+            drawCameraCCDView(state.fringe.phase); capturedPhaseFrames = []; clearAlgorithmOutputs('物体已改变，请重新采集并重建');
+        }
+        document.getElementById('btnObjSphere').addEventListener('click', () => selectObject('sphere'));
+        document.getElementById('btnObjFace').addEventListener('click', () => selectObject('face'));
+        document.getElementById('btnObjPeaks').addEventListener('click', () => selectObject('peaks'));
+
+        function updateUIElementsFromState() {
+            document.getElementById('projX').value = state.proj.x; document.getElementById('projXVal').innerText = `${state.proj.x.toFixed(1)} m`;
+            document.getElementById('fringeFreq').value = state.fringe.frequency; document.getElementById('fringeFreqVal').innerText = `${state.fringe.frequency.toFixed(1)} rad/m`;
+            document.getElementById('phaseShift').value = Math.round((state.fringe.phase * 180) / Math.PI); document.getElementById('phaseShiftVal').innerText = `${Math.round((state.fringe.phase * 180) / Math.PI)}°`;
+            document.getElementById('camX').value = state.cam.x; document.getElementById('camXVal').innerText = `${state.cam.x.toFixed(1)} m`;
+            document.getElementById('boardZ').value = state.board.z; document.getElementById('boardZVal').innerText = `${state.board.z.toFixed(1)} m`;
+            document.getElementById('camLux').value = state.cam.lux; document.getElementById('camLuxVal').innerText = `${state.cam.lux} Lux`;
+            document.getElementById('projXInput').value = state.proj.x.toFixed(2);
+            document.getElementById('fringeFreqInput').value = state.fringe.frequency.toFixed(1);
+            document.getElementById('phaseShiftInput').value = Math.round((state.fringe.phase * 180) / Math.PI);
+            document.getElementById('camXInput').value = state.cam.x.toFixed(2);
+            document.getElementById('boardZInput').value = state.board.z.toFixed(1);
+            document.getElementById('camLuxInput').value = state.cam.lux;
+        }
+
+        function applyParameterValue(id, rawValue) {
+            const el = document.getElementById(id);
+            let val = parseFloat(rawValue);
+            if (!Number.isFinite(val)) return;
+            if (el) {
+                const min = parseFloat(el.min), max = parseFloat(el.max);
+                if (Number.isFinite(min)) val = Math.max(min, val);
+                if (Number.isFinite(max)) val = Math.min(max, val);
+                el.value = val;
+            }
+            if (id === 'projX') state.proj.x = val;
+            else if (id === 'fringeFreq') state.fringe.frequency = val;
+            else if (id === 'phaseShift') state.fringe.phase = (val * Math.PI) / 180;
+            else if (id === 'camX') state.cam.x = val;
+            else if (id === 'boardZ') { state.board.z = val; targetMesh.position.set(0, 0, state.board.z); }
+            else if (id === 'camLux') state.cam.lux = parseInt(val);
+        }
+
+        function scheduleParameterPreview() {
+            updateUIElementsFromState(); updateProjectorMatrix();
+            capturedPhaseFrames = [];
+            if (parameterPreviewRAF === null) {
+                parameterPreviewRAF = requestAnimationFrame(() => {
+                    parameterPreviewRAF = null;
+                    drawCameraCCDView(state.fringe.phase, true);
+                });
+            }
+            window.clearTimeout(parameterPreviewTimer);
+            parameterPreviewTimer = window.setTimeout(() => {
+                drawCameraCCDView(state.fringe.phase, false);
+                clearAlgorithmOutputs('参数已变化，请重新点击重建按钮运行算法'); markRecomputeNeeded();
+            }, 220);
+        }
+
+        function finalizeParameterPreview() {
+            window.clearTimeout(parameterPreviewTimer);
+            updateUIElementsFromState(); updateProjectorMatrix(); drawCameraCCDView(state.fringe.phase, false);
+            clearAlgorithmOutputs('参数已变化，请重新点击重建按钮运行算法'); markRecomputeNeeded();
+        }
+
+        const parameterIds = ['projX', 'fringeFreq', 'phaseShift', 'camX', 'boardZ', 'camLux'];
+        parameterIds.forEach(id => {
+            const rangeEl = document.getElementById(id), inputEl = document.getElementById(`${id}Input`);
+            rangeEl.addEventListener('input', (e) => {
+                applyParameterValue(id, e.target.value);
+                scheduleParameterPreview();
+            });
+            rangeEl.addEventListener('change', finalizeParameterPreview);
+            rangeEl.addEventListener('pointerup', finalizeParameterPreview);
+            rangeEl.addEventListener('mouseup', finalizeParameterPreview);
+            rangeEl.addEventListener('touchend', finalizeParameterPreview);
+            rangeEl.addEventListener('keyup', finalizeParameterPreview);
+            if (inputEl) {
+                inputEl.addEventListener('input', (e) => {
+                    applyParameterValue(id, e.target.value);
+                    scheduleParameterPreview();
+                });
+                inputEl.addEventListener('change', finalizeParameterPreview);
+                inputEl.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') finalizeParameterPreview();
+                });
+            }
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            state.proj.x = -0.8; state.fringe.frequency = 8.0; state.fringe.phase = 0.0; state.cam.x = 0.8; state.board.z = 5.0; state.activeObjectType = 'face'; state.cam.lux = 100; state.pcColorMode = 'height'; state.proj.projectionMode = 'fringe';
+            document.getElementById('btnColorHeight').className = "bg-indigo-600 text-white px-1.5 py-0.5 rounded transition"; document.getElementById('btnColorError').className = "text-slate-400 px-1.5 py-0.5 rounded transition";
+            updateProjectionModeButtons(); updatePhaseButtonsForProjectionMode(); updateDockLayoutForProjectionMode(); updateUIElementsFromState(); selectObject('face'); controls.reset(); mainCamera.position.set(0, 5, 8); showNotification("实验室重置", "全部硬件状态已还原至标准状态。", "success");
+        });
+
+        const btnShowWrapped = document.getElementById('btnShowWrapped'), btnShowUnwrapped = document.getElementById('btnShowUnwrapped');
+        btnShowWrapped.addEventListener('click', () => { state.phaseStateView = 'wrapped'; btnShowWrapped.className = "text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition"; btnShowUnwrapped.className = "text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition"; renderPhaseCanvas(); });
+        btnShowUnwrapped.addEventListener('click', () => { state.phaseStateView = 'unwrapped'; btnShowUnwrapped.className = "text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition"; btnShowWrapped.className = "text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded transition"; renderPhaseCanvas(); });
+
+        const btnSensorAPS = document.getElementById('btnSensorAPS'), btnSensorEVS = document.getElementById('btnSensorEVS'), lblSensorMode = document.getElementById('lblSensorMode');
+        btnSensorAPS.addEventListener('click', () => { state.cam.sensorMode = 'aps'; btnSensorAPS.className = "text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold transition"; btnSensorEVS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition"; lblSensorMode.innerText = "APS (Grayscale)"; drawCameraCCDView(state.fringe.phase); capturedPhaseFrames = []; clearAlgorithmOutputs('已切换 APS，请重新运行算法'); markRecomputeNeeded(); });
+        btnSensorEVS.addEventListener('click', () => { state.cam.sensorMode = 'evs'; btnSensorEVS.className = "text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold transition"; btnSensorAPS.className = "text-[9px] text-slate-400 px-1.5 py-0.5 rounded font-bold transition"; lblSensorMode.innerText = "EVS (Event-Enhanced)"; drawCameraCCDView(state.fringe.phase); capturedPhaseFrames = []; clearAlgorithmOutputs('已切换 EVS，请重新运行算法'); markRecomputeNeeded(); });
+
+        const btnColorHeight = document.getElementById('btnColorHeight'), btnColorError = document.getElementById('btnColorError');
+        btnColorHeight.addEventListener('click', () => { state.pcColorMode = 'height'; btnColorHeight.className = "bg-indigo-600 text-white px-1.5 py-0.5 rounded transition"; btnColorError.className = "text-slate-400 px-1.5 py-0.5 rounded transition"; rebuild3DPointCloud(); });
+        btnColorError.addEventListener('click', () => { state.pcColorMode = 'error'; btnColorError.className = "bg-indigo-600 text-white px-1.5 py-0.5 rounded transition"; btnColorHeight.className = "text-slate-400 px-1.5 py-0.5 rounded transition"; rebuild3DPointCloud(); });
+
+        const btnToggleDefocus = document.getElementById('btnToggleDefocus'), btnToggleDistortion = document.getElementById('btnToggleDistortion');
+        btnToggleDefocus.addEventListener('click', () => {
+            state.proj.lensDefocus = !state.proj.lensDefocus;
+            if (state.proj.lensDefocus) { btnToggleDefocus.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-600 text-white border border-indigo-500 transition"; btnToggleDefocus.innerText = "已启用"; } else { btnToggleDefocus.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition"; btnToggleDefocus.innerText = "已禁用"; }
+            updateProjectorMatrix(); drawCameraCCDView(state.fringe.phase); capturedPhaseFrames = []; clearAlgorithmOutputs('光学参数已变化，请重新运行算法'); markRecomputeNeeded();
+        });
+        btnToggleDistortion.addEventListener('click', () => {
+            state.proj.lensDistortion = !state.proj.lensDistortion;
+            if (state.proj.lensDistortion) { btnToggleDistortion.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-600 text-white border border-indigo-500 transition"; btnToggleDistortion.innerText = "已启用"; } else { btnToggleDistortion.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition"; btnToggleDistortion.innerText = "已禁用"; }
+            updateProjectorMatrix(); drawCameraCCDView(state.fringe.phase); capturedPhaseFrames = []; clearAlgorithmOutputs('光学参数已变化，请重新运行算法'); markRecomputeNeeded();
+        });
+
+        window.addEventListener('resize', () => {
+            const width = container.clientWidth, height = container.clientHeight; mainCamera.aspect = width / height; mainCamera.updateProjectionMatrix(); renderer.setSize(width, height);
+            const pcCont = document.getElementById('pointCloudContainer'); if (pcCont && pcCamera && pcRenderer) { pcCamera.aspect = pcCont.clientWidth / pcCont.clientHeight; pcCamera.updateProjectionMatrix(); pcRenderer.setSize(pcCont.clientWidth, pcCont.clientHeight); }
+        });
+
+        function animate() { requestAnimationFrame(animate); controls.update(); pcControls.update(); renderer.render(mainScene, mainCamera); pcRenderer.render(pcScene, pcCamera); }
+
+        const windowStates = {
+            sensor: { id: 'sensorContainer', maximized: false, defaultClasses: 'bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300' },
+            phase: { id: 'phaseContainer', maximized: false, defaultClasses: 'bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300' },
+            cloud: { id: 'cloudContainerWindow', maximized: false, defaultClasses: 'bg-slate-900 border border-slate-800 rounded-lg overflow-hidden flex flex-col relative transition-all duration-300' }
+        };
+        function toggleMaximizeWindow(winKey) {
+            const win = windowStates[winKey], el = document.getElementById(win.id), btn = el.querySelector(`[data-window-btn="${winKey}"]`);
+            if (!win.maximized) {
+                Object.keys(windowStates).forEach(key => { if (windowStates[key].maximized && key !== winKey) toggleMaximizeWindow(key); });
+                el.className = 'fixed inset-12 md:inset-20 z-50 bg-slate-900 border-2 border-indigo-500 rounded-2xl overflow-hidden flex flex-col shadow-2xl transition-all duration-300';
+                btn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4 text-indigo-400"></i>`; win.maximized = true; showNotification("窗口已放大", "现在可以观察相机信号或 3D 点云细节。", "success");
+            } else { el.className = win.defaultClasses; btn.innerHTML = `<i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>`; win.maximized = false; }
+            lucide.createIcons(); setTimeout(() => { window.dispatchEvent(new Event('resize')); }, 100);
+        }
+
+        updateTargetObject(); updateProjectionModeButtons(); updatePhaseButtonsForProjectionMode(); updateDockLayoutForProjectionMode(); updateProjectorMatrix(); drawCameraCCDView(state.fringe.phase); clearAlgorithmOutputs('请点击“启动高精度点云重建”运行算法');
+        window.dispatchEvent(new Event('resize'));
+
+        function downloadXYZ() {
+            if (!lastComputedHeightMap) return showNotification("导出失败", "请先启动点云重建以生成数据。", "error");
+            const w = phaseCanvas.width, h = phaseCanvas.height, aspect = w / h, colorHelper = new THREE.Color();
+            let output = "# XYZ Point Cloud File generated by Structure Light Sim\n# Format: X Y Z R G B\n", exported = 0;
+            for (let v = 0; v < h; v += 2) {
+                const ny = (v / h) * 2 - 1;
+                for (let u = 0; u < w; u += 2) {
+                    const z_height = lastComputedHeightMap[v * w + u]; if (z_height === -999.0 || !Number.isFinite(z_height)) continue;
+                    const hit = pointOnCameraRayAtHeight((u / w) * 2 - 1, ny, aspect, z_height); if (!hit) continue;
+                    colorHelper.setHSL(0.55 + ((z_height + 0.2) / 1.5) * 0.18, 0.95, 0.45 + ((z_height + 0.2) / 1.5) * 0.1);
+                    output += `${hit.x.toFixed(4)} ${hit.y.toFixed(4)} ${z_height.toFixed(4)} ${Math.round(colorHelper.r * 255)} ${Math.round(colorHelper.g * 255)} ${Math.round(colorHelper.b * 255)}\n`; exported++;
+                }
+            }
+            if (exported === 0) return showNotification("导出失败", "当前没有有效点云，请先重建。", "error");
+            const blob = new Blob([output], { type: 'text/plain' }), link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `pointcloud_${state.activeObjectType}.xyz`; link.click(); URL.revokeObjectURL(link.href);
+            showNotification("导出成功", `已下载 ${exported} 个点的三维点云文件。`, "success");
+        }
+
+        animate();
+    </script>
+</body>
+</html>
