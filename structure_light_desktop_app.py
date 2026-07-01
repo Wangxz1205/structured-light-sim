@@ -448,6 +448,45 @@ class StructuredLightPhysics:
         radiance = pattern * lambert * view_gain * distance_gain * power_gain * wavelength_gain
         return np.where(mask, np.clip(radiance, 0.0, 2.5), 0.0).astype(np.float32)
 
+    def surface_projector_preview(
+        self, state: SimState, world_x: np.ndarray, world_y: np.ndarray, height: np.ndarray, frame_or_phase: float
+    ) -> np.ndarray:
+        mask = np.ones_like(height, dtype=bool)
+        u, v = self.projector_coordinates(state, world_x, world_y, height)
+        projection_valid = np.isfinite(u) & np.isfinite(v)
+        uu = np.nan_to_num(u, nan=0.0)
+        vv = np.nan_to_num(v, nan=0.0)
+
+        if state.projection_mode == "temporal":
+            frame_index = int(np.clip(frame_or_phase, 0, 6))
+            col = np.floor((uu - TEMPORAL_X_MIN) / (TEMPORAL_X_MAX - TEMPORAL_X_MIN) * TEMPORAL_COLUMNS).astype(np.int32)
+            row = np.round((vv - TEMPORAL_Y_MIN) / (TEMPORAL_Y_MAX - TEMPORAL_Y_MIN) * (TEMPORAL_ROWS - 1)).astype(np.int32)
+            inside = projection_valid & (col >= 0) & (col < TEMPORAL_COLUMNS) & (row >= 0) & (row < TEMPORAL_ROWS)
+            col = np.clip(col, 0, TEMPORAL_COLUMNS - 1)
+            row = np.clip(row, 0, TEMPORAL_ROWS - 1)
+            cx = TEMPORAL_X_MIN + (col + 0.5) / TEMPORAL_COLUMNS * (TEMPORAL_X_MAX - TEMPORAL_X_MIN)
+            cy = TEMPORAL_Y_MIN + (row + 0.5) / TEMPORAL_ROWS * (TEMPORAL_Y_MAX - TEMPORAL_Y_MIN)
+            r2 = ((u - cx) / TEMPORAL_DOT_RX) ** 2 + ((v - cy) / TEMPORAL_DOT_RY) ** 2
+            soft_dot = np.clip(1.0 - (r2 - 0.72) / 0.28, 0.0, 1.0)
+            bit = TEMPORAL_CODES[frame_index, col]
+            pattern = np.where(inside & (r2 <= 1.0) & (bit > 0), soft_dot, 0.0)
+            pattern *= 0.80 + 0.20 * self._hash2d(uu * 88.0 + frame_index, vv * 86.0)
+        else:
+            phase_rad = float(frame_or_phase)
+            pattern = 0.5 + 0.5 * np.cos(state.fringe_frequency * 3.0 * uu + phase_rad)
+            if state.projector_type == "dlp":
+                pattern = np.power(np.clip(pattern, 0.0, 1.0), max(0.2, state.projector_gamma))
+
+        shadow = self.shadow_mask(state, world_x, world_y, height, mask)
+        pattern = np.where(shadow, pattern * 0.28, pattern)
+        cos_i, _, projector_dist, _ = self._surface_cosines(state, world_x, world_y, height)
+        distance_gain = (state.board_z / projector_dist) ** 2
+        lambert = np.clip(0.18 + 0.82 * cos_i, 0.0, 1.0)
+        power_gain = np.clip(state.projector_power_mw / 450.0, 0.05, 6.0)
+        wavelength_gain = np.clip(850.0 / max(state.projector_wavelength_nm, 350.0), 0.35, 2.5)
+        preview = pattern * lambert * distance_gain * power_gain * wavelength_gain
+        return np.where(projection_valid, np.clip(preview, 0.0, 1.0), 0.0).astype(np.float32)
+
     def camera_optical_transfer(self, state: SimState, irradiance: np.ndarray) -> np.ndarray:
         airy_px = 2.44 * (state.projector_wavelength_nm * 1e-6) * max(state.camera_f_number, 0.7) / max(self.spec.aps_pixel_size_um * 1e-3, 1e-4)
         blur_passes = 0
@@ -789,11 +828,11 @@ class SceneCanvas(QtWidgets.QWidget):
         scene_world_x = physics.xx
         scene_world_y = physics.yy
         h = physics.surface_height_at(state, scene_world_x, scene_world_y)
-        mask = h > 1e-4
+        object_mask = h > 1e-4
         if state.projection_mode == "temporal":
-            preview_signal, _, _ = physics.temporal_pattern(state, int(state.phase_deg // 52) % 7)
+            preview_signal = physics.surface_projector_preview(state, scene_world_x, scene_world_y, h, int(state.phase_deg // 52) % 7)
         else:
-            preview_signal, _, _ = physics.fringe_intensity(state, math.radians(state.phase_deg))
+            preview_signal = physics.surface_projector_preview(state, scene_world_x, scene_world_y, h, math.radians(state.phase_deg))
 
         scene_step = 3
         signal_small = preview_signal[::scene_step, ::scene_step]
@@ -802,9 +841,10 @@ class SceneCanvas(QtWidgets.QWidget):
         surface_z = state.board_z - h[::scene_step, ::scene_step]
 
         base = np.zeros((*surface_x.shape, 4), dtype=float)
-        base[..., 0] = 0.10
-        base[..., 1] = 0.12
-        base[..., 2] = 0.16
+        base_shade = 0.16 + 0.62 * signal_small
+        base[..., 0] = base_shade
+        base[..., 1] = base_shade
+        base[..., 2] = base_shade
         base[..., 3] = 0.82
         obj = np.zeros_like(base)
         shade = 0.18 + 0.82 * signal_small
@@ -817,7 +857,7 @@ class SceneCanvas(QtWidgets.QWidget):
             obj[..., 1] = shade
             obj[..., 2] = shade
         obj[..., 3] = 0.95
-        colors = np.where(mask[::scene_step, ::scene_step, None], obj, base)
+        colors = np.where(object_mask[::scene_step, ::scene_step, None], obj, base)
 
         rows, cols = surface_x.shape
         vertices = np.column_stack([
@@ -954,28 +994,52 @@ class LabeledSlider(QtWidgets.QWidget):
         self.maximum = maximum
         self.step = step
         self.suffix = suffix
+        self.display_unit = suffix
+        self.unit_factors = {"m": 1.0, "cm": 100.0} if suffix == "m" else {suffix: 1.0}
         self.label = QtWidgets.QLabel(label)
         self.label.setStyleSheet("color:#bfdbfe;font-size:13px;")
         self.current_value = float(value)
-        self.suffix_label = QtWidgets.QLabel(suffix)
-        self.suffix_label.setFixedWidth(52)
-        self.suffix_label.setStyleSheet("color:#38bdf8;font-weight:bold;font-size:12px;")
         self.edit = QtWidgets.QLineEdit()
         self.edit.setFixedWidth(104)
         self.edit.setFixedHeight(26)
         self.edit.setAlignment(QtCore.Qt.AlignRight)
         self.edit.setStyleSheet("background:#020617;color:#f8fafc;border:1px solid #334155;border-radius:4px;padding:3px 6px;")
+        self.step_up = QtWidgets.QToolButton()
+        self.step_up.setText("▲")
+        self.step_up.setFixedSize(24, 13)
+        self.step_down = QtWidgets.QToolButton()
+        self.step_down.setText("▼")
+        self.step_down.setFixedSize(24, 13)
+        step_buttons = QtWidgets.QVBoxLayout()
+        step_buttons.setContentsMargins(0, 0, 0, 0)
+        step_buttons.setSpacing(0)
+        step_buttons.addWidget(self.step_up)
+        step_buttons.addWidget(self.step_down)
+        if suffix == "m":
+            self.unit_combo = QtWidgets.QComboBox()
+            self.unit_combo.addItems(["m", "cm"])
+            self.unit_combo.setFixedWidth(58)
+            self.unit_combo.currentTextChanged.connect(self._change_display_unit)
+            self.suffix_widget = self.unit_combo
+        else:
+            self.unit_combo = None
+            self.suffix_widget = QtWidgets.QLabel(suffix)
+            self.suffix_widget.setFixedWidth(52)
+            self.suffix_widget.setStyleSheet("color:#38bdf8;font-weight:bold;font-size:12px;")
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
+        row.setSpacing(6)
         row.addWidget(self.label, 1)
         row.addWidget(self.edit)
-        row.addWidget(self.suffix_label)
+        row.addLayout(step_buttons)
+        row.addWidget(self.suffix_widget)
         layout.addLayout(row)
         self.edit.editingFinished.connect(self._from_edit)
+        self.step_up.clicked.connect(lambda: self._step_by(1))
+        self.step_down.clicked.connect(lambda: self._step_by(-1))
         self.set_value(value, emit=False)
 
     def value(self) -> float:
@@ -986,19 +1050,45 @@ class LabeledSlider(QtWidgets.QWidget):
         value = round((value - self.minimum) / self.step) * self.step + self.minimum
         value = max(self.minimum, min(self.maximum, float(value)))
         self.current_value = value
-        self.edit.setText(f"{value:.2f}" if self.step < 0.1 else f"{value:.1f}")
+        self._refresh_edit_text()
         if emit:
             self.value_changed.emit(value)
 
     def _from_edit(self) -> None:
         old_value = self.current_value
         try:
-            self.set_value(float(self.edit.text()))
+            display_value = float(self.edit.text())
+            base_value = display_value / self.unit_factors.get(self.display_unit, 1.0)
+            self.set_value(base_value)
         except ValueError:
             self.set_value(self.current_value, emit=False)
             return
         if abs(self.current_value - old_value) > 1e-12:
             self.value_committed.emit(self, old_value, self.current_value)
+
+    def _step_by(self, direction: int) -> None:
+        old_value = self.current_value
+        self.set_value(self.current_value + direction * self.step)
+        if abs(self.current_value - old_value) > 1e-12:
+            self.value_committed.emit(self, old_value, self.current_value)
+
+    def _change_display_unit(self, unit: str) -> None:
+        self.display_unit = unit
+        self._refresh_edit_text()
+
+    def _refresh_edit_text(self) -> None:
+        factor = self.unit_factors.get(self.display_unit, 1.0)
+        value = self.current_value * factor
+        display_step = self.step * factor
+        if display_step < 0.01:
+            text = f"{value:.3f}"
+        elif display_step < 0.1:
+            text = f"{value:.2f}"
+        elif display_step < 1.0:
+            text = f"{value:.1f}"
+        else:
+            text = f"{value:.0f}" if abs(value - round(value)) < 1e-9 else f"{value:.1f}"
+        self.edit.setText(text)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -1100,7 +1190,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.extrinsic_roll_deg = self._add_slider("外参 roll 偏角", -8.0, 8.0, self.state.extrinsic_roll_deg, 0.1, "°")
 
         self._section("2. 目标物体")
-        self.board_z = self._add_slider("物体距离 Z 轴", 1.5, 8.0, self.state.board_z, 0.1, "m")
+        self.board_z = self._add_slider("物体距离 Z 轴", 1.5, 8.0, self.state.board_z, 0.01, "m")
         self.object_offset_x = self._add_slider("物体 X 位置偏移", -1.5, 1.5, self.state.object_offset_x, 0.01, "m")
         self.object_offset_y = self._add_slider("物体 Y 位置偏移", -1.2, 1.2, self.state.object_offset_y, 0.01, "m")
         self.board_depth_1 = self._add_slider("木板1凸出深度", 0.05, 1.50, self.state.board_depth_1, 0.01, "m")
