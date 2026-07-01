@@ -786,7 +786,10 @@ class SceneCanvas(QtWidgets.QWidget):
 
     def draw_scene(self, physics: StructuredLightPhysics, state: SimState) -> None:
         self._clear()
-        _, _, h, mask = physics.trace_camera_surface(state)
+        scene_world_x = physics.xx
+        scene_world_y = physics.yy
+        h = physics.surface_height_at(state, scene_world_x, scene_world_y)
+        mask = h > 1e-4
         if state.projection_mode == "temporal":
             preview_signal, _, _ = physics.temporal_pattern(state, int(state.phase_deg // 52) % 7)
         else:
@@ -794,13 +797,8 @@ class SceneCanvas(QtWidgets.QWidget):
 
         scene_step = 3
         signal_small = preview_signal[::scene_step, ::scene_step]
-        surface_x, surface_y, _, _ = physics.point_on_camera_ray_at_height(
-            state,
-            physics.nx[::scene_step, ::scene_step],
-            physics.ny[::scene_step, ::scene_step],
-            h[::scene_step, ::scene_step],
-        )
-        surface_y = surface_y * 1.0
+        surface_x = scene_world_x[::scene_step, ::scene_step]
+        surface_y = scene_world_y[::scene_step, ::scene_step]
         surface_z = state.board_z - h[::scene_step, ::scene_step]
 
         base = np.zeros((*surface_x.shape, 4), dtype=float)
@@ -839,9 +837,10 @@ class SceneCanvas(QtWidgets.QWidget):
         self._add(mesh)
 
         grid = gl.GLGridItem()
-        grid.setSize(x=4.4, y=max(6.0, state.board_z + 0.4), z=1.0)
+        grid_depth = 8.4
+        grid.setSize(x=4.4, y=grid_depth, z=1.0)
         grid.setSpacing(x=0.25, y=0.25, z=1.0)
-        grid.translate(0.0, max(6.0, state.board_z + 0.4) / 2.0, -1.45)
+        grid.translate(0.0, grid_depth / 2.0, -1.45)
         grid.setColor((18, 49, 92, 160))
         self._add(grid)
 
@@ -862,7 +861,7 @@ class SceneCanvas(QtWidgets.QWidget):
         self._add(gl.GLTextItem(pos=np.array([cam[0], cam[1] - 0.16, cam[2] + 0.10]), text="CAMERA +X", color=QtGui.QColor("#fb7185"), font=label_font))
         projector_label = "VCSEL PROJECTOR -X" if state.projector_type == "vcsel" else "DLP PROJECTOR -X"
         self._add(gl.GLTextItem(pos=np.array([proj[0], proj[1] + 0.12, proj[2] + 0.10]), text=projector_label, color=QtGui.QColor("#60a5fa"), font=label_font))
-        self.view.opts["center"] = QtGui.QVector3D(state.object_offset_x, state.board_z * 0.46, state.object_offset_y - 0.18)
+        self.view.opts["center"] = QtGui.QVector3D(0.0, 3.6, -0.18)
         self.view.setCameraPosition(distance=9.4)
 
 
@@ -1071,7 +1070,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fringe_frequency = self._add_slider("条纹空间频率", 2.0, 18.0, self.state.fringe_frequency, 0.1, "rad/m")
         self.phase_deg = self._add_slider("实时相移偏置", 0.0, 360.0, self.state.phase_deg, 1.0, "°")
         self.camera_x = self._add_slider("相机 X 轴位置", -1.5, 1.5, self.state.camera_x, 0.01, "m")
-        self.board_z = self._add_slider("物体距离 Z 轴", 3.0, 8.0, self.state.board_z, 0.1, "m")
         self.ambient_lux = self._add_slider("环境照度", 5.0, 1000.0, self.state.ambient_lux, 1.0, "Lux")
 
         self._section("1A. 投影仪真实内参")
@@ -1102,6 +1100,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.extrinsic_roll_deg = self._add_slider("外参 roll 偏角", -8.0, 8.0, self.state.extrinsic_roll_deg, 0.1, "°")
 
         self._section("2. 目标物体")
+        self.board_z = self._add_slider("物体距离 Z 轴", 1.5, 8.0, self.state.board_z, 0.1, "m")
         self.object_offset_x = self._add_slider("物体 X 位置偏移", -1.5, 1.5, self.state.object_offset_x, 0.01, "m")
         self.object_offset_y = self._add_slider("物体 Y 位置偏移", -1.2, 1.2, self.state.object_offset_y, 0.01, "m")
         self.board_depth_1 = self._add_slider("木板1凸出深度", 0.05, 1.50, self.state.board_depth_1, 0.01, "m")
