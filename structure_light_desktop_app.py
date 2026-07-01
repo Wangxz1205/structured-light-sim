@@ -92,6 +92,9 @@ class SimState:
     board_z: float = 5.0
     object_offset_x: float = 0.0
     object_offset_y: float = 0.0
+    board_depth_1: float = 0.30
+    board_depth_2: float = 0.58
+    board_depth_3: float = 0.88
     projector_focal_mm: float = 9.0
     projector_resolution_x: float = 1280.0
     projector_resolution_y: float = 800.0
@@ -207,19 +210,26 @@ class StructuredLightPhysics:
         return montage
 
     @staticmethod
-    def _board_specs() -> List[Tuple[float, float, float, float, float]]:
+    def _base_board_specs() -> List[Tuple[float, float, float, float, float]]:
         return [
             (-1.08, -0.18, -0.82, 0.88, 0.30),
             (-0.50, 0.48, -0.70, 0.78, 0.58),
             (0.16, 1.10, -0.56, 0.66, 0.88),
         ]
 
+    def _board_specs(self, state: SimState | None = None) -> List[Tuple[float, float, float, float, float]]:
+        specs = self._base_board_specs()
+        if state is None:
+            return specs
+        depths = [state.board_depth_1, state.board_depth_2, state.board_depth_3]
+        return [(x0, x1, y0, y1, max(0.02, depth)) for (x0, x1, y0, y1, _), depth in zip(specs, depths)]
+
     def surface_height_at(self, state: SimState, world_x: np.ndarray, world_y: np.ndarray) -> np.ndarray:
         local_x = world_x - state.object_offset_x
         local_y = world_y - state.object_offset_y
         if state.object_type == "boards":
             h = np.zeros_like(world_x, dtype=np.float32)
-            for x0, x1, y0, y1, depth in self._board_specs():
+            for x0, x1, y0, y1, depth in self._board_specs(state):
                 inside = (local_x >= x0) & (local_x <= x1) & (local_y >= y0) & (local_y <= y1)
                 h = np.where(inside, np.maximum(h, depth), h)
             return h.astype(np.float32)
@@ -333,7 +343,7 @@ class StructuredLightPhysics:
             height = np.where(closer, hit_h, height)
             valid |= closer
 
-        for x0, x1, y0, y1, depth in self._board_specs():
+        for x0, x1, y0, y1, depth in self._board_specs(state):
             x0 += state.object_offset_x
             x1 += state.object_offset_x
             y0 += state.object_offset_y
@@ -1061,7 +1071,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fringe_frequency = self._add_slider("条纹空间频率", 2.0, 18.0, self.state.fringe_frequency, 0.1, "rad/m")
         self.phase_deg = self._add_slider("实时相移偏置", 0.0, 360.0, self.state.phase_deg, 1.0, "°")
         self.camera_x = self._add_slider("相机 X 轴位置", -1.5, 1.5, self.state.camera_x, 0.01, "m")
-        self.board_z = self._add_slider("物体中心距离 Z 轴", 3.0, 8.0, self.state.board_z, 0.1, "m")
+        self.board_z = self._add_slider("物体距离 Z 轴", 3.0, 8.0, self.state.board_z, 0.1, "m")
         self.ambient_lux = self._add_slider("环境照度", 5.0, 1000.0, self.state.ambient_lux, 1.0, "Lux")
 
         self._section("1A. 投影仪真实内参")
@@ -1090,14 +1100,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.extrinsic_yaw_deg = self._add_slider("外参 yaw 偏角", -8.0, 8.0, self.state.extrinsic_yaw_deg, 0.1, "°")
         self.extrinsic_pitch_deg = self._add_slider("外参 pitch 偏角", -8.0, 8.0, self.state.extrinsic_pitch_deg, 0.1, "°")
         self.extrinsic_roll_deg = self._add_slider("外参 roll 偏角", -8.0, 8.0, self.state.extrinsic_roll_deg, 0.1, "°")
-        self.calib_summary = QtWidgets.QLabel("")
-        self.calib_summary.setWordWrap(True)
-        self.calib_summary.setStyleSheet("color:#cbd5e1;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:8px;font-family:Consolas,'Microsoft YaHei';")
-        self.controls_layout.addWidget(self.calib_summary)
 
         self._section("2. 目标物体")
         self.object_offset_x = self._add_slider("物体 X 位置偏移", -1.5, 1.5, self.state.object_offset_x, 0.01, "m")
         self.object_offset_y = self._add_slider("物体 Y 位置偏移", -1.2, 1.2, self.state.object_offset_y, 0.01, "m")
+        self.board_depth_1 = self._add_slider("木板1凸出深度", 0.05, 1.50, self.state.board_depth_1, 0.01, "m")
+        self.board_depth_2 = self._add_slider("木板2凸出深度", 0.05, 1.50, self.state.board_depth_2, 0.01, "m")
+        self.board_depth_3 = self._add_slider("木板3凸出深度", 0.05, 1.50, self.state.board_depth_3, 0.01, "m")
         self.object_group = self._button_group([
             ("球面", "sphere"),
             ("人脸浮雕", "face"),
@@ -1129,7 +1138,6 @@ class MainWindow(QtWidgets.QMainWindow):
         ], self.set_sensor)
 
         self.controls_layout.addStretch()
-        self.update_calibration_summary()
 
         self.scene = SceneCanvas()
         right_layout.addWidget(self.scene, 2)
@@ -1218,6 +1226,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.state.board_z = self.board_z.value()
         self.state.object_offset_x = self.object_offset_x.value()
         self.state.object_offset_y = self.object_offset_y.value()
+        self.state.board_depth_1 = self.board_depth_1.value()
+        self.state.board_depth_2 = self.board_depth_2.value()
+        self.state.board_depth_3 = self.board_depth_3.value()
         self.state.fringe_frequency = self.fringe_frequency.value()
         self.state.phase_deg = self.phase_deg.value()
         self.state.ambient_lux = self.ambient_lux.value()
@@ -1252,27 +1263,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.state.projector_type = "dlp"
 
     def update_calibration_summary(self) -> None:
-        s = self.state
-        cam_fx = s.camera_focal_mm / (self.physics.spec.aps_pixel_size_um * 1e-3)
-        cam_fy = cam_fx
-        proj_fx = s.projector_focal_mm / (s.projector_pixel_um * 1e-3)
-        proj_fy = proj_fx
-        baseline = s.camera_x - s.projector_x
-        self.calib_summary.setText(
-            "Projector source = {}\n"
-            "Radiometry = {:.0f} mW, {:.0f} nm, gamma {:.1f}; Camera = f/{:.1f}, {:.1f} ms, gain {:.1f} dB\n"
-            "K_camera = [[{:.1f}, 0, {:.1f}], [0, {:.1f}, {:.1f}], [0, 0, 1]]\n"
-            "K_projector = [[{:.1f}, 0, {:.1f}], [0, {:.1f}, {:.1f}], [0, 0, 1]]\n"
-            "T_projector_to_camera = [{:.3f}, 0, 0] m, R(yaw,pitch,roll)=({:.1f}, {:.1f}, {:.1f})°"
-            .format(
-                "VCSEL" if s.projector_type == "vcsel" else "DLP",
-                s.projector_power_mw, s.projector_wavelength_nm, s.projector_gamma,
-                s.camera_f_number, s.exposure_ms, s.sensor_gain_db,
-                cam_fx, s.camera_principal_x_px, cam_fy, s.camera_principal_y_px,
-                proj_fx, s.projector_resolution_x * 0.5, proj_fy, s.projector_resolution_y * 0.5,
-                baseline, s.extrinsic_yaw_deg, s.extrinsic_pitch_deg, s.extrinsic_roll_deg,
-            )
-        )
+        return
 
     def set_object(self, value: str) -> None:
         self.state.object_type = value
@@ -1354,39 +1345,68 @@ class MainWindow(QtWidgets.QMainWindow):
         local_y = self.physics.yy - self.state.object_offset_y
         rows = []
         measured_depths: List[float] = []
+        depth_uncertainties_mm: List[float] = []
         true_depths: List[float] = []
-        for index, (x0, x1, y0, y1, true_depth) in enumerate(self.physics._board_specs(), start=1):
+        systematic_floor_mm = 0.35 if self.state.projection_mode == "temporal" else 0.12
+        systematic_floor_mm += 0.04 * abs(self.state.extrinsic_yaw_deg)
+
+        def fmt_bias(value_mm: float) -> str:
+            if not np.isfinite(value_mm):
+                return "--"
+            if abs(value_mm) < 0.005:
+                return "<0.01"
+            return f"{value_mm:+.2f}"
+
+        for index, (x0, x1, y0, y1, true_depth) in enumerate(self.physics._board_specs(self.state), start=1):
             # The visible board scene contains front faces plus side faces/occlusion edges.
             # Measure each board as a depth layer, which is closer to how a step-depth target is inspected.
             visible = np.isfinite(height) & (np.abs(height - true_depth) < 0.06)
             true_depths.append(true_depth)
             if np.any(visible):
-                measured_depth = float(np.nanmedian(height[visible]))
+                layer_values = height[visible]
+                measured_depth = float(np.nanmean(layer_values))
                 xs = local_x[visible]
                 ys = local_y[visible]
                 measured_w = float(np.nanmax(xs) - np.nanmin(xs)) if xs.size else float("nan")
                 measured_h = float(np.nanmax(ys) - np.nanmin(ys)) if ys.size else float("nan")
                 measured_depths.append(measured_depth)
-                error_mm = (measured_depth - true_depth) * 1000.0
+                residual_mm = (layer_values - true_depth) * 1000.0
+                point_sigma_mm = float(np.nanstd(residual_mm))
+                mean_sem_mm = point_sigma_mm / math.sqrt(max(1, int(np.sum(visible))))
+                uncertainty_mm = math.sqrt(mean_sem_mm * mean_sem_mm + systematic_floor_mm * systematic_floor_mm)
+                depth_uncertainties_mm.append(uncertainty_mm)
+                bias_mm = (measured_depth - true_depth) * 1000.0
                 rows.append(
                     f"板{index}: 真实宽高 {x1 - x0:.2f}x{y1 - y0:.2f}m, 凸出深度 {true_depth:.3f}m; "
-                    f"点云可见范围 {measured_w:.2f}x{measured_h:.2f}m, 测得深度 {measured_depth:.3f}m, 误差 {error_mm:+.1f}mm"
+                    f"点云可见范围 {measured_w:.2f}x{measured_h:.2f}m, 测得深度 {measured_depth:.4f}m, "
+                    f"偏差 {fmt_bias(bias_mm)}mm, 单点σ {point_sigma_mm:.2f}mm, 不确定度 ±{uncertainty_mm:.2f}mm"
                 )
             else:
                 measured_depths.append(float("nan"))
+                depth_uncertainties_mm.append(float("nan"))
                 rows.append(f"板{index}: 真实宽高 {x1 - x0:.2f}x{y1 - y0:.2f}m, 凸出深度 {true_depth:.3f}m; 对应深度层点数不足")
         spacings = []
         for i in range(len(true_depths) - 1):
             true_gap = true_depths[i + 1] - true_depths[i]
             measured_gap = measured_depths[i + 1] - measured_depths[i]
             if np.isfinite(measured_gap):
-                spacings.append(f"板{i + 1}->板{i + 2} 深度差: 真 {true_gap:.3f}m, 测 {measured_gap:.3f}m, 误差 {(measured_gap - true_gap) * 1000.0:+.1f}mm")
+                gap_uncertainty = math.sqrt(depth_uncertainties_mm[i] ** 2 + depth_uncertainties_mm[i + 1] ** 2)
+                gap_bias_mm = (measured_gap - true_gap) * 1000.0
+                spacings.append(
+                    f"板{i + 1}->板{i + 2} 深度差: 真 {true_gap:.3f}m, 测 {measured_gap:.4f}m, "
+                    f"偏差 {fmt_bias(gap_bias_mm)}mm, 不确定度 ±{gap_uncertainty:.2f}mm"
+                )
             else:
                 spacings.append(f"板{i + 1}->板{i + 2} 深度差: 真 {true_gap:.3f}m, 测量点不足")
         total_true_gap = true_depths[-1] - true_depths[0]
         total_measured_gap = measured_depths[-1] - measured_depths[0]
         if np.isfinite(total_measured_gap):
-            spacings.append(f"板1->板3 总深度差: 真 {total_true_gap:.3f}m, 测 {total_measured_gap:.3f}m, 误差 {(total_measured_gap - total_true_gap) * 1000.0:+.1f}mm")
+            total_uncertainty = math.sqrt(depth_uncertainties_mm[0] ** 2 + depth_uncertainties_mm[-1] ** 2)
+            total_bias_mm = (total_measured_gap - total_true_gap) * 1000.0
+            spacings.append(
+                f"板1->板3 总深度差: 真 {total_true_gap:.3f}m, 测 {total_measured_gap:.4f}m, "
+                f"偏差 {fmt_bias(total_bias_mm)}mm, 不确定度 ±{total_uncertainty:.2f}mm"
+            )
         return "\n".join(rows + spacings)
 
     def run_reconstruction(self) -> None:
@@ -1459,6 +1479,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.board_z.set_value(self.state.board_z, emit=False)
         self.object_offset_x.set_value(self.state.object_offset_x, emit=False)
         self.object_offset_y.set_value(self.state.object_offset_y, emit=False)
+        self.board_depth_1.set_value(self.state.board_depth_1, emit=False)
+        self.board_depth_2.set_value(self.state.board_depth_2, emit=False)
+        self.board_depth_3.set_value(self.state.board_depth_3, emit=False)
         self.projector_focal_mm.set_value(self.state.projector_focal_mm, emit=False)
         self.projector_resolution_x.set_value(self.state.projector_resolution_x, emit=False)
         self.projector_resolution_y.set_value(self.state.projector_resolution_y, emit=False)
