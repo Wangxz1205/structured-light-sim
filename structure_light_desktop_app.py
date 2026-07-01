@@ -49,23 +49,16 @@ for font_path in FONT_CANDIDATES:
 rcParams["font.sans-serif"] = ["Microsoft YaHei", "Noto Sans SC", "SimHei", "SimSun", "DejaVu Sans"]
 rcParams["axes.unicode_minus"] = False
 
-TEMPORAL_COLUMNS = 26
-TEMPORAL_ROWS = 56
+TEMPORAL_COLUMNS = 52
+TEMPORAL_ROWS = 48
 TEMPORAL_X_MIN = -1.85
 TEMPORAL_X_MAX = 1.85
 TEMPORAL_Y_MIN = -1.42
 TEMPORAL_Y_MAX = 1.42
-TEMPORAL_DOT_RX = 0.034
-TEMPORAL_DOT_RY = 0.026
-TEMPORAL_CODES = np.array([
-    [1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
-    [0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1],
-    [0,0,0,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0],
-    [1,1,1,1,1,0,0,0,0,0,1,1,1,0,0,0,1,1,0,0,0,0,0,1,1,1],
-    [0,0,1,0,0,0,1,1,1,1,1,0,0,0,1,1,0,0,1,1,0,1,1,0,1,0],
-    [1,0,0,0,1,1,1,0,0,1,0,0,1,1,1,0,0,1,0,1,1,0,1,0,0,1],
-    [1,1,1,1,1,1,0,1,1,0,1,1,1,0,0,0,1,0,1,0,1,1,0,1,1,1],
-], dtype=np.int32)
+TEMPORAL_DOT_RX = 0.018
+TEMPORAL_DOT_RY = 0.014
+_TEMPORAL_GRAY = np.arange(TEMPORAL_COLUMNS, dtype=np.int32) ^ (np.arange(TEMPORAL_COLUMNS, dtype=np.int32) >> 1)
+TEMPORAL_CODES = (((_TEMPORAL_GRAY[None, :] >> np.arange(6, -1, -1, dtype=np.int32)[:, None]) & 1)).astype(np.int32)
 
 
 @dataclass
@@ -585,7 +578,6 @@ class StructuredLightPhysics:
     def reconstruct_temporal(self, state: SimState) -> Dict[str, np.ndarray]:
         frames = [self.temporal_pattern(state, i)[0] for i in range(7)]
         _, _, truth, mask = self.trace_camera_surface(state)
-        target_mask = self._target_reconstruction_mask(state, truth, mask)
         event_image = np.zeros((*frames[0].shape, 3), dtype=np.float32)
         event_strength = np.zeros(frames[0].shape, dtype=np.float32)
         signed_events = np.zeros(frames[0].shape, dtype=np.float32)
@@ -599,29 +591,45 @@ class StructuredLightPhysics:
         event_image[..., 0] = neg
         event_image[..., 1] = np.where(neutral_activity, 0.55, 0.0)
         event_image[..., 2] = pos
-        event_image = np.where(target_mask[..., None], event_image, 0.0)
-        active = event_strength > (0.45 if state.sensor_mode == "evs" else 0.70)
+        event_image = np.where(mask[..., None], event_image, 0.0)
+
+        stack = np.stack(frames, axis=0)
+        local_min = np.min(stack, axis=0)
+        local_max = np.max(stack, axis=0)
+        span = local_max - local_min
+        bit_threshold = local_min + 0.44 * span
+        observed_bits = (stack > bit_threshold).astype(np.int16).transpose(1, 2, 0)
+        codebook = TEMPORAL_CODES.T.astype(np.int16)
+        mismatch = np.sum(np.abs(observed_bits[:, :, None, :] - codebook[None, None, :, :]), axis=-1)
+        ordered = np.sort(mismatch, axis=-1)
+        decoded_col = np.argmin(mismatch, axis=-1).astype(np.int32)
+        best_mismatch = ordered[..., 0]
+        second_mismatch = ordered[..., 1]
+        code_margin = second_mismatch - best_mismatch
+
+        active_threshold = 0.70 if state.sensor_mode == "evs" else 0.62
+        active = (span > active_threshold) & (local_max > 0.12)
         grid_keep = self._temporal_dot_centers_mask()
-        reliable = target_mask & active & grid_keep
+        reliable = mask & active & grid_keep & (best_mismatch <= 1) & (code_margin >= 1)
         lux = max(1.0, state.ambient_lux)
         miss_prob = 0.02 + 0.18 / math.sqrt(lux)
         reliable &= self.rng.random(reliable.shape) > miss_prob
-        focal_px = state.camera_focal_mm / (self.spec.aps_pixel_size_um * 1e-3)
-        baseline_m = max(0.05, abs(state.camera_x - state.projector_x))
-        depth_m = np.maximum(0.25, state.board_z - truth)
-        event_snr = np.maximum(0.05, event_strength / (0.16 + 0.28 / math.sqrt(lux)))
-        localization_sigma_px = np.clip(0.08 + 0.34 / np.sqrt(event_snr), 0.08, 0.65)
-        if state.projector_type == "vcsel":
-            localization_sigma_px += 0.025
-        if state.sensor_mode == "evs":
-            localization_sigma_px *= 0.82
-        triangulation_sigma_m = (depth_m * depth_m / (focal_px * baseline_m)) * localization_sigma_px
-        calibration_floor_m = 0.00006 + 0.00002 * abs(state.extrinsic_yaw_deg)
-        temporal_noise = self.rng.normal(0.0, triangulation_sigma_m + calibration_floor_m, truth.shape)
-        z = np.where(reliable, truth + temporal_noise, np.nan)
+
+        col_pitch = (TEMPORAL_X_MAX - TEMPORAL_X_MIN) / TEMPORAL_COLUMNS
+        decoded_u = TEMPORAL_X_MIN + (decoded_col.astype(np.float32) + 0.5) * col_pitch
+        event_snr = np.maximum(0.2, span / (0.06 + 0.14 / math.sqrt(lux)))
+        u_sigma = np.clip(col_pitch * (0.010 + 0.030 / np.sqrt(event_snr)), col_pitch * 0.004, col_pitch * 0.06)
+        decoded_u = decoded_u + self.rng.normal(0.0, u_sigma, decoded_u.shape).astype(np.float32)
+
+        solved, solved_valid = self.solve_height_from_projector_u(state, decoded_u)
+        z = np.where(reliable & solved_valid, solved, np.nan)
+        local_median = self._nanmedian_window(z, radius=2)
+        local_consistent = np.isfinite(local_median) & (np.abs(z - local_median) < 0.055)
+        z = np.where(local_consistent, z, np.nan)
         z = np.where(np.isfinite(z), np.clip(z, -0.8, 1.8), np.nan)
-        phase = np.where(reliable, event_strength, np.nan)
-        return {"sensor_rgb": np.clip(event_image, 0.0, 1.0), "phase": phase, "height": z, "mask": reliable, "truth": truth}
+        final_mask = np.isfinite(z)
+        phase = np.where(final_mask, decoded_col.astype(np.float32), np.nan)
+        return {"sensor_rgb": np.clip(event_image, 0.0, 1.0), "phase": phase, "height": z, "mask": final_mask, "truth": truth}
 
     def phase_difference_for_height(self, state: SimState, height: np.ndarray) -> np.ndarray:
         flat_height = np.zeros_like(height, dtype=np.float32)
@@ -652,6 +660,33 @@ class StructuredLightPhysics:
         solved = np.where(bracketed, solved, np.where(valid & nearest_lo, -0.8, 1.8))
         return np.where(valid, solved, np.nan).astype(np.float32)
 
+    def projector_u_for_height(self, state: SimState, height: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        world_x, world_y, _, ray_valid = self.point_on_camera_ray_at_height(state, self.nx, self.ny, height)
+        u, _ = self.projector_coordinates(state, world_x, world_y, height)
+        valid = ray_valid & np.isfinite(u)
+        return u.astype(np.float32), valid
+
+    def solve_height_from_projector_u(self, state: SimState, target_u: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        lo = np.full_like(target_u, -0.8, dtype=np.float32)
+        hi = np.full_like(target_u, min(1.8, state.board_z - 0.05), dtype=np.float32)
+        u_lo, valid_lo = self.projector_u_for_height(state, lo)
+        u_hi, valid_hi = self.projector_u_for_height(state, hi)
+        f_lo = u_lo - target_u
+        f_hi = u_hi - target_u
+        valid = np.isfinite(target_u) & valid_lo & valid_hi & np.isfinite(f_lo) & np.isfinite(f_hi)
+        bracketed = valid & (f_lo * f_hi <= 0.0)
+        for _ in range(28):
+            mid = 0.5 * (lo + hi)
+            u_mid, valid_mid = self.projector_u_for_height(state, mid)
+            f_mid = u_mid - target_u
+            left = bracketed & valid_mid & np.isfinite(f_mid) & (f_lo * f_mid <= 0.0)
+            hi = np.where(left, mid, hi)
+            f_hi = np.where(left, f_mid, f_hi)
+            lo = np.where(bracketed & ~left, mid, lo)
+            f_lo = np.where(bracketed & ~left, f_mid, f_lo)
+        solved = 0.5 * (lo + hi)
+        return np.where(bracketed, solved, np.nan).astype(np.float32), bracketed
+
     def _phase_from_frames(self, frames: List[np.ndarray], phases: Iterable[float]) -> np.ndarray:
         s = np.zeros_like(frames[0])
         c = np.zeros_like(frames[0])
@@ -681,6 +716,18 @@ class StructuredLightPhysics:
         out = z + self.rng.normal(0.0, noise, z.shape)
         out = np.where(mask, out, np.nan)
         return np.clip(out, -0.8, 1.8)
+
+    @staticmethod
+    def _nanmedian_window(values: np.ndarray, radius: int = 1) -> np.ndarray:
+        padded = np.pad(values, radius, mode="constant", constant_values=np.nan)
+        windows = []
+        for dy in range(2 * radius + 1):
+            for dx in range(2 * radius + 1):
+                windows.append(padded[dy:dy + values.shape[0], dx:dx + values.shape[1]])
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return np.nanmedian(np.stack(windows, axis=0), axis=0).astype(np.float32)
 
     def _temporal_dot_centers_mask(self) -> np.ndarray:
         x_norm = (self.xx - TEMPORAL_X_MIN) / (TEMPORAL_X_MAX - TEMPORAL_X_MIN) * TEMPORAL_COLUMNS
@@ -1003,18 +1050,46 @@ class LabeledSlider(QtWidgets.QWidget):
         self.edit.setFixedWidth(104)
         self.edit.setFixedHeight(26)
         self.edit.setAlignment(QtCore.Qt.AlignRight)
-        self.edit.setStyleSheet("background:#020617;color:#f8fafc;border:1px solid #334155;border-radius:4px;padding:3px 6px;")
+        self.edit.setStyleSheet(
+            "background:#020617;color:#f8fafc;border:1px solid #334155;"
+            "border-right:0;border-top-left-radius:4px;border-bottom-left-radius:4px;"
+            "border-top-right-radius:0;border-bottom-right-radius:0;padding:3px 6px;"
+        )
         self.step_up = QtWidgets.QToolButton()
         self.step_up.setText("▲")
-        self.step_up.setFixedSize(24, 13)
         self.step_down = QtWidgets.QToolButton()
         self.step_down.setText("▼")
-        self.step_down.setFixedSize(24, 13)
-        step_buttons = QtWidgets.QVBoxLayout()
+        for button in (self.step_up, self.step_down):
+            button.setAutoRepeat(True)
+            button.setFixedSize(24, 13)
+            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setStyleSheet(
+                "QToolButton { background:#1e293b;color:#e2e8f0;border:0;font-size:9px;padding:0; }"
+                "QToolButton:hover { background:#334155;color:#ffffff; }"
+                "QToolButton:pressed { background:#4f46e5;color:#ffffff; }"
+            )
+        self.step_up.setStyleSheet(
+            self.step_up.styleSheet()
+            + "QToolButton { border:1px solid #334155;border-bottom:0;border-top-right-radius:4px; }"
+        )
+        self.step_down.setStyleSheet(
+            self.step_down.styleSheet()
+            + "QToolButton { border:1px solid #334155;border-top:1px solid #475569;border-bottom-right-radius:4px; }"
+        )
+        step_box = QtWidgets.QWidget()
+        step_box.setFixedSize(24, 26)
+        step_buttons = QtWidgets.QVBoxLayout(step_box)
         step_buttons.setContentsMargins(0, 0, 0, 0)
         step_buttons.setSpacing(0)
         step_buttons.addWidget(self.step_up)
         step_buttons.addWidget(self.step_down)
+        number_box = QtWidgets.QWidget()
+        number_box.setFixedHeight(26)
+        number_layout = QtWidgets.QHBoxLayout(number_box)
+        number_layout.setContentsMargins(0, 0, 0, 0)
+        number_layout.setSpacing(0)
+        number_layout.addWidget(self.edit)
+        number_layout.addWidget(step_box)
         if suffix == "m":
             self.unit_combo = QtWidgets.QComboBox()
             self.unit_combo.addItems(["m", "cm"])
@@ -1033,8 +1108,7 @@ class LabeledSlider(QtWidgets.QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
         row.addWidget(self.label, 1)
-        row.addWidget(self.edit)
-        row.addLayout(step_buttons)
+        row.addWidget(number_box)
         row.addWidget(self.suffix_widget)
         layout.addLayout(row)
         self.edit.editingFinished.connect(self._from_edit)
