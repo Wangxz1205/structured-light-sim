@@ -32,6 +32,7 @@ APP_H = 1120
 SENSOR_W = 320
 SENSOR_H = 240
 RNG_SEED = 885
+OPTICAL_AXIS_Z = 5.0
 
 FONT_CANDIDATES = [
     Path(r"C:\Windows\Fonts\msyh.ttc"),
@@ -135,8 +136,8 @@ class StructuredLightPhysics:
         self.hash_a = self._hash2d(self.xx * 19.7, self.yy * 23.1)
 
     @staticmethod
-    def _device_basis(device_x: float, board_z: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        forward = np.array([-device_x, 0.0, board_z], dtype=np.float64)
+    def _device_basis(device_x: float, optical_axis_z: float = OPTICAL_AXIS_Z) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        forward = np.array([-device_x, 0.0, optical_axis_z], dtype=np.float64)
         forward /= np.linalg.norm(forward) or 1.0
         right = np.array([-forward[2], 0.0, forward[0]], dtype=np.float64)
         right /= np.linalg.norm(right) or 1.0
@@ -266,7 +267,7 @@ class StructuredLightPhysics:
             radial = 1.0 + state.camera_k1 * r2 + state.camera_k2 * r2 * r2
             x_cam *= radial
             y_cam *= radial
-        right, up, forward = self._device_basis(state.camera_x, state.board_z)
+        right, up, forward = self._device_basis(state.camera_x)
         right, up, forward = self._rotate_basis(right, up, forward, state.extrinsic_yaw_deg, state.extrinsic_pitch_deg, state.extrinsic_roll_deg)
         dx = forward[0] + right[0] * x_cam + up[0] * y_cam
         dy = forward[1] + right[1] * x_cam + up[1] * y_cam
@@ -372,7 +373,7 @@ class StructuredLightPhysics:
         qx = world_x - state.projector_x
         qy = world_y
         qz = world_z
-        right, up, forward = self._device_basis(state.projector_x, state.board_z)
+        right, up, forward = self._device_basis(state.projector_x)
         right, up, forward = self._rotate_basis(right, up, forward, -state.extrinsic_yaw_deg, -state.extrinsic_pitch_deg, -state.extrinsic_roll_deg)
         depth = qx * forward[0] + qy * forward[1] + qz * forward[2]
         safe_depth = np.where(np.abs(depth) < 1e-6, np.nan, depth)
@@ -384,8 +385,8 @@ class StructuredLightPhysics:
         px = proj_x * state.projector_focal_mm / pixel_mm + cx
         py = proj_y * state.projector_focal_mm / pixel_mm + cy
         inside = (px >= 0.0) & (px < state.projector_resolution_x) & (py >= 0.0) & (py < state.projector_resolution_y) & (depth > 0.0)
-        u = (px - cx) * pixel_mm / max(state.projector_focal_mm, 0.1) * state.board_z
-        v = (py - cy) * pixel_mm / max(state.projector_focal_mm, 0.1) * state.board_z
+        u = (px - cx) * pixel_mm / max(state.projector_focal_mm, 0.1) * OPTICAL_AXIS_Z
+        v = (py - cy) * pixel_mm / max(state.projector_focal_mm, 0.1) * OPTICAL_AXIS_Z
         if abs(state.camera_k1) > 1e-9 or abs(state.camera_k2) > 1e-9:
             r2 = u * u + v * v
             radial = 1.0 + state.camera_k1 * 0.02 * r2 + state.camera_k2 * 0.0004 * r2 * r2
