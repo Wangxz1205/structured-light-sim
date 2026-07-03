@@ -607,10 +607,14 @@ class StructuredLightPhysics:
         second_mismatch = ordered[..., 1]
         code_margin = second_mismatch - best_mismatch
 
-        active_threshold = 0.70 if state.sensor_mode == "evs" else 0.62
+        preview_active = mask & (span > 0.18) & (local_max > 0.10) & (best_mismatch <= 1)
+        decoded_preview = np.where(preview_active, decoded_col.astype(np.float32), np.nan)
+
+        local_span_peak = self._max_window(span, radius=2)
+        dot_core = span >= np.maximum(0.18, local_span_peak * 0.62)
+        active_threshold = 0.50 if state.sensor_mode == "evs" else 0.46
         active = (span > active_threshold) & (local_max > 0.12)
-        grid_keep = self._temporal_dot_centers_mask()
-        reliable = mask & active & grid_keep & (best_mismatch <= 1) & (code_margin >= 1)
+        reliable = mask & active & dot_core & (best_mismatch <= 1) & (code_margin >= 1)
         lux = max(1.0, state.ambient_lux)
         miss_prob = 0.02 + 0.18 / math.sqrt(lux)
         reliable &= self.rng.random(reliable.shape) > miss_prob
@@ -624,12 +628,22 @@ class StructuredLightPhysics:
         solved, solved_valid = self.solve_height_from_projector_u(state, decoded_u)
         z = np.where(reliable & solved_valid, solved, np.nan)
         local_median = self._nanmedian_window(z, radius=2)
-        local_consistent = np.isfinite(local_median) & (np.abs(z - local_median) < 0.055)
+        local_consistent = np.isfinite(local_median) & (np.abs(z - local_median) < 0.12)
         z = np.where(local_consistent, z, np.nan)
         z = np.where(np.isfinite(z), np.clip(z, -0.8, 1.8), np.nan)
         final_mask = np.isfinite(z)
         phase = np.where(final_mask, decoded_col.astype(np.float32), np.nan)
-        return {"sensor_rgb": np.clip(event_image, 0.0, 1.0), "phase": phase, "height": z, "mask": final_mask, "truth": truth}
+        return {
+            "sensor": frames[-1],
+            "sensor_montage": self.phase_frame_montage(frames),
+            "frames": frames,
+            "event_rgb": np.clip(event_image, 0.0, 1.0),
+            "decoded": decoded_preview,
+            "phase": phase,
+            "height": z,
+            "mask": final_mask,
+            "truth": truth,
+        }
 
     def phase_difference_for_height(self, state: SimState, height: np.ndarray) -> np.ndarray:
         flat_height = np.zeros_like(height, dtype=np.float32)
@@ -729,12 +743,14 @@ class StructuredLightPhysics:
             warnings.simplefilter("ignore", category=RuntimeWarning)
             return np.nanmedian(np.stack(windows, axis=0), axis=0).astype(np.float32)
 
-    def _temporal_dot_centers_mask(self) -> np.ndarray:
-        x_norm = (self.xx - TEMPORAL_X_MIN) / (TEMPORAL_X_MAX - TEMPORAL_X_MIN) * TEMPORAL_COLUMNS
-        y_norm = (self.yy - TEMPORAL_Y_MIN) / (TEMPORAL_Y_MAX - TEMPORAL_Y_MIN) * TEMPORAL_ROWS
-        dx = np.abs(x_norm - (np.floor(x_norm) + 0.5))
-        dy = np.abs(y_norm - (np.floor(y_norm) + 0.5))
-        return (dx < 0.22) & (dy < 0.22)
+    @staticmethod
+    def _max_window(values: np.ndarray, radius: int = 1) -> np.ndarray:
+        padded = np.pad(values, radius, mode="edge")
+        windows = []
+        for dy in range(2 * radius + 1):
+            for dx in range(2 * radius + 1):
+                windows.append(padded[dy:dy + values.shape[0], dx:dx + values.shape[1]])
+        return np.max(np.stack(windows, axis=0), axis=0).astype(np.float32)
 
 
 class ImageCanvas(FigureCanvas):
@@ -1584,8 +1600,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     previous = self._show_temporal_acquisition_frame(frame_index, previous)
                     self._pause_for_acquisition(130)
                 result = self.physics.reconstruct_temporal(self.state)
-                self.sensor_view.show_image(result["sensor_rgb"])
-                self.phase_view.show_image(result["phase"], cmap="turbo")
+                self.sensor_view.show_image(result["sensor_montage"], cmap="gray", vmin=0, vmax=1)
+                self.phase_view.show_image(result["decoded"], cmap="turbo", vmin=0, vmax=TEMPORAL_COLUMNS - 1)
                 done = f"{source_name} 点阵时序重建完成：已按 7 帧图案与 6 帧 EVS 事件码完成解码"
             else:
                 self.status.setText(f"正在采集 {source_name} 的 {self.state.phase_steps} 步相移帧并解包裹...")
